@@ -1,0 +1,18 @@
+# Planning docs — not committed (phases 3 & 4 still unimplemented)
+ARCHITECTURE-PLAN.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Runtime output
+*.db
+
+# macOS
+.DS_Store

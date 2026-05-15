@@ -1,0 +1,6 @@
+# Phase 2 (baseline + playback manifest mode)
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# Phase 3 (duplex playback — reading FLAC/WAV for spectrogram masking)
+# soundfile>=0.12.1

@@ -1,0 +1,112 @@
+# Pinnae
+
+Real-time rat ultrasonic vocalization (USV) detector. Listens through a high-frequency microphone, detects calls in defined frequency bands via FFT thresholding, and logs every event to a SQLite database with precise timestamps.
+
+Designed to run alongside [Squeakorithm](https://github.com/josephcoco/squeakorithm) enrichment sessions, but works entirely standalone.
+
+---
+
+## Requirements
+
+- Python 3.10+
+- [Dodotronic Ultramic SO.104](https://www.dodotronic.com/ultramic-384k/) (or any mic that reaches 192 kHz)
+- `sounddevice`, `numpy` (see `requirements.txt`)
+
+On macOS, PortAudio is required by sounddevice:
+
+```bash
+brew install portaudio
+pip install -r requirements.txt
+```
+
+---
+
+## Usage
+
+### Find your microphone
+
+```bash
+python listen.py devices
+```
+
+Look for the SO.104 in the output. Note its name or index.
+
+### Baseline recording (no music playing)
+
+```bash
+python listen.py baseline --device "Ultramic 384K BL" --db session.db
+python listen.py baseline --device "Ultramic 384K BL" --db session.db --duration 600
+```
+
+Monitors the **alarm band (18–26 kHz)** and **social-low band (30–45 kHz)**. Both are fully below the Squeakorithm 33 kHz music floor, so there is zero overlap with enrichment audio.
+
+### Playback mode (Squeakorithm session running)
+
+```bash
+python listen.py playback --manifest session.json --db session.db
+```
+
+Same bands as baseline. Each logged event additionally records `track_name` and `timestamp_track_relative` (seconds since the track started) by cross-referencing the session manifest.
+
+### Inspect logged events
+
+```bash
+sqlite3 session.db "SELECT datetime(timestamp_abs,'unixepoch','localtime'), band, peak_freq_hz, duration_ms, power_db FROM events ORDER BY timestamp_abs;"
+```
+
+---
+
+## Detection bands
+
+| Band | Range | Clean during playback? |
+|---|---|---|
+| `alarm` | 18–26 kHz | **Yes** — 7 kHz gap below Squeakorithm's 33 kHz floor |
+| `social_low` | 30–45 kHz | Mostly (30–33 kHz clean; 33–45 kHz partial overlap) |
+| `social_core` | 45–70 kHz | No — requires spectrogram masking (Phase 3) |
+| `social_high` | 70–80 kHz | No — requires spectrogram masking (Phase 3) |
+
+---
+
+## How detection works
+
+Each 42.7 ms audio chunk (8192 samples at 192 kHz) is processed in the sounddevice callback:
+
+1. Apply a Hann window and compute the one-sided FFT power spectrum (dBFS).
+2. For each monitored band, find the peak power and its frequency.
+3. Compare peak power against a rolling noise floor (50-chunk median of band medians, ~2 s window).
+4. If peak exceeds floor by ≥ `DETECTION_THRESHOLD_DB` (default 20 dB): mark the chunk as active.
+5. A call is finalized and logged when `CALL_END_SILENCE_MS` (15 ms) of sub-threshold chunks follow.
+6. Calls shorter than `MIN_CALL_DURATION_MS` (5 ms) are discarded as transients.
+
+All thresholds are in `config.py`.
+
+---
+
+## Squeakorithm integration
+
+Pinnae and Squeakorithm are decoupled. The only link is an optional session manifest JSON that Squeakorithm writes when `--write-manifest` is passed to `enrich_track.py`:
+
+```json
+{
+  "session_id": "2026-05-15T14:30:00",
+  "sample_rate": 96000,
+  "tracks": [
+    {
+      "path": "output/track1_enriched.wav",
+      "start_time_abs": 1747318200.0,
+      "duration_s": 183.4,
+      "usv_band_min_hz": 33000,
+      "usv_band_max_hz": 80000
+    }
+  ]
+}
+```
+
+Without a manifest, `playback` mode still detects calls — it just omits the track-relative timestamp columns.
+
+---
+
+## Roadmap
+
+- **Phase 3** — Duplex stream: push Squeakorithm FLAC output to speaker while pulling mic; apply per-bin spectrogram mask (mic bins zeroed where playback energy exceeds threshold, with 5.3 ms propagation delay compensation). Enables reliable `social_core` and `social_high` detection during music.
+- **Phase 4** — Lightweight CNN (ONNX, <2 ms/chunk) trained on baseline ground-truth clips from DeepSqueak export to replace FFT threshold for the 45–80 kHz social range.
