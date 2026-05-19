@@ -9,7 +9,7 @@ Designed to run alongside [Squeakorithm](https://github.com/josephcoco/squeakori
 ## Requirements
 
 - Python 3.10+
-- [Dodotronic Ultramic SO.104](https://www.dodotronic.com/ultramic-384k/) (or any mic that reaches 192 kHz)
+- [Sonorous Objects SO.104](https://sonorousobjects.nyc/products/so-104-ultrasonic-omni-microphone) (or any mic that reaches 192 kHz)
 - `sounddevice`, `numpy` (see `requirements.txt`)
 
 On macOS, PortAudio is required by sounddevice:
@@ -38,7 +38,7 @@ python listen.py baseline --device "Ultramic 384K BL" --db session.db
 python listen.py baseline --device "Ultramic 384K BL" --db session.db --duration 600
 ```
 
-Monitors the **alarm band (18–26 kHz)** and **social-low band (30–45 kHz)**. Both are fully below the Squeakorithm 33 kHz music floor, so there is zero overlap with enrichment audio.
+Monitors the **alarm band (18–26 kHz)** and **social-low band (30–45 kHz)**.
 
 ### Playback mode (Squeakorithm session running)
 
