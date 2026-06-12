@@ -21,6 +21,12 @@ pip install -r requirements.txt
 
 ---
 
+## Home Ratification
+
+Before running the detector, read the [**Ratification Guide**](RATIFICATION.md) to survey your home for non-rat sources of ultrasonic noise (CFLs, LED bulbs, chargers, electronics, etc.). Eliminating these noise sources ensures better quality of life for rats and accurate detection.
+
+---
+
 ## Live dashboard
 
 A browser dashboard shows the real-time event timeline, rolling-baseline statistics (1 H / 3 H / 6 H / 12 H / 1 D / 1 W / 1 MO), and per-band activity. It runs as a separate server process so the HTTP/WebSocket load never touches the audio capture thread.
