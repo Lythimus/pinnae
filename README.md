@@ -54,6 +54,67 @@ pip install -r requirements.txt
 
 ---
 
+## Home Ratification
+
+Before running the detector, read the [**Ratification Guide**](RATIFICATION.md) to survey your home for non-rat sources of ultrasonic noise (CFLs, LED bulbs, chargers, electronics, etc.). Eliminating these noise sources ensures better quality of life for rats and accurate detection.
+
+---
+
+## Live dashboard
+
+A browser dashboard shows the real-time event timeline, rolling-baseline statistics (1 H / 3 H / 6 H / 12 H / 1 D / 1 W / 1 MO), and per-band activity. It runs as a separate server process so the HTTP/WebSocket load never touches the audio capture thread.
+
+### Start the server
+
+```bash
+uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
+
+Open `http://<lan-ip>:8000` in any browser on the same network.
+
+### Start capture alongside the server
+
+Run both in separate terminals:
+
+```bash
+# Terminal 1 — capture
+python listen.py baseline --device "Ultramic 384K BL" --db events.db
+
+# Terminal 2 — dashboard server
+uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
+
+The detector broadcasts each event over UDP loopback (`127.0.0.1:8765`); the server fans it out to all connected WebSocket clients in real time. If the server is not running, the packet drops silently and SQLite still receives the row — no audio impact.
+
+### Architecture
+
+```
+listen.py (audio process)          server/ (uvicorn process)
+  audio callback → FFT                UDP listener ← UDP 127.0.0.1:8765
+  consumer thread → SQLite            ConnectionManager → WebSocket clients
+  consumer thread → UDP send          GET /api/usv/events  (SQLite read-only)
+                                      GET /              (static/index.html)
+```
+
+- `events.db` is the single source of truth. The server opens it read-only in WAL mode so reads never block writes.
+- On browser connect the dashboard fetches history via `GET /api/usv/events?since=<ms>&limit=2000`, then opens the WebSocket for live events — no gap in coverage.
+
+### Verify the server independently
+
+Inject a fake event without the mic:
+
+```bash
+python -c "
+import socket, json, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.sendto(json.dumps({'ts': time.time()*1000, 'type': 'alarm'}).encode(), ('127.0.0.1', 8765))
+"
+```
+
+The dashboard should flash an alarm tick within ~50 ms.
+
+---
+
 ## Usage
 
 ### Find your microphone
@@ -143,3 +204,14 @@ Without a manifest, `playback` mode still detects calls — it just omits the tr
 
 - **Phase 3** — Duplex stream: push Squeakorithm FLAC output to speaker while pulling mic; apply per-bin spectrogram mask (mic bins zeroed where playback energy exceeds threshold, with 5.3 ms propagation delay compensation). Enables reliable `social_core` and `social_high` detection during music.
 - **Phase 4** — Lightweight CNN (ONNX, <2 ms/chunk) trained on baseline ground-truth clips from DeepSqueak export to replace FFT threshold for the 45–80 kHz social range.
+
+---
+
+## Future features
+
+- **`--no-broadcast` flag** — suppress the UDP send in `listen.py` for quiet/headless runs where the dashboard server is not running.
+- **`max_ts` history ceiling on the dashboard** — the `/api/usv/events` endpoint already accepts a `max_ts` query parameter; the dashboard client should pass `max_ts=<t_open_ms>` (the WebSocket open time) when fetching history so the WS buffer and the backfill HTTP response have a hard overlap boundary, eliminating any dupe/skip at the handoff seam.
+- **`--db` flag for the server** — currently the server always reads `events.db` in the working directory; a CLI flag (or env var) would let it point at an arbitrary path, matching the `--db` option in `listen.py`.
+- **Minute-bucket pre-aggregation** — for long-running sessions the full-resolution history payload can grow large; a `minute_bucket` materialized view would keep `GET /api/usv/events` fast beyond ~100k rows.
+- **5-second server-side reconciler** — if the UDP socket buffer fills under a high burst rate, live packets can drop; a background task emitting `MAX(id)` deltas from SQLite would close the gap for reconnecting clients.
+- **spectrogram masking (Phase 3)** — `social_core` (45–70 kHz) and `social_high` (70–80 kHz) bands are defined in `config.py` but disabled until the duplex masking pipeline is in place; enabling them in `PLAYBACK_BANDS` before then will produce false positives from music bleed-through.

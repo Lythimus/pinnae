@@ -18,7 +18,9 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import json
 import queue
+import socket
 import sys
 import threading
 import time
@@ -58,6 +60,10 @@ def _run_stream(
     detectors = _make_detectors(band_names)
     event_q: queue.SimpleQueue[Optional[DetectionEvent]] = queue.SimpleQueue()
 
+    _bcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    _bcast_sock.setblocking(False)
+    _bcast_addr = ("127.0.0.1", 8765)
+
     # Calibrated once on first callback so chunk timestamps are in Unix epoch seconds.
     _pa_start: list[Optional[float]] = [None]
     _epoch_start: list[float] = [0.0]
@@ -96,6 +102,11 @@ def _run_stream(
             timestamp_track_relative=track_rel,
             track_name=track_name,
         )
+        try:
+            payload = json.dumps({"ts": event.timestamp_abs * 1000, "type": event.band}).encode()
+            _bcast_sock.sendto(payload, _bcast_addr)
+        except OSError:
+            pass
 
         ts = datetime.fromtimestamp(event.timestamp_abs).strftime("%H:%M:%S.%f")[:-3]
         track_str = f"  @track+{track_rel:7.2f}s" if track_rel is not None else ""
@@ -166,6 +177,7 @@ def _run_stream(
         stop.set()
         consumer_thread.join(timeout=2.0)
         db.close()
+        _bcast_sock.close()
         print(f"\n[squeaker-listen] Session ended. Events saved to {db_path}")
 
 

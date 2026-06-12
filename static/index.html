@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pinnae — USV Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #0d0d14;
+  --sf1:     #111120;
+  --sf2:     #161628;
+  --bd:      #1c1c34;
+  --txt:     #c0c0d8;
+  --dim:     #42425e;
+  --lbl:     #7070a0;
+
+  --alarm:   #ff3333;
+  --shi:     #aa66ff;
+  --sco:     #00ccff;
+  --slo:     #3399ff;
+}
+
+html, body { height: 100%; overflow: hidden; }
+
+body {
+  background: var(--bg);
+  color: var(--txt);
+  font-family: 'IBM Plex Mono', 'Consolas', monospace;
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ──────────── HEADER ──────────── */
+.hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  height: 42px;
+  border-bottom: 1px solid var(--bd);
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  letter-spacing: 0.18em;
+  font-size: 11px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.brand-sub {
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+
+.hdr-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* window pills */
+.pills {
+  display: flex;
+  background: var(--sf1);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  padding: 2px;
+  gap: 1px;
+}
+
+.pill {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  padding: 3px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.pill:hover { color: var(--txt); }
+.pill.on {
+  background: var(--sf2);
+  color: var(--txt);
+}
+
+/* connection badge */
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+  background: var(--sf1);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: color 0.1s;
+}
+.conn:hover { color: var(--txt); }
+
+.cdot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  transition: background 0.3s;
+}
+.cdot.sim  { background: #cc9933; }
+.cdot.live { background: #33cc66; }
+.cdot.err  { background: #cc3333; }
+
+/* ──────────── STATUS BAR ──────────── */
+.sbar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--bd);
+  flex-shrink: 0;
+}
+
+.scard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-right: 1px solid var(--bd);
+  transition: background-color 0.5s;
+}
+.scard:last-child { border-right: none; }
+.scard.ac { background: #140608; }
+.scard.sc { background: #07081a; }
+
+.sdot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  opacity: 0.35;
+  transition: opacity 0.3s;
+}
+.ac .sdot { background: var(--alarm); }
+.sc .sdot { background: var(--sco); }
+
+.sdot.pulse {
+  opacity: 1;
+  animation: dpulse 0.75s ease-in-out infinite;
+}
+.ac .sdot.pulse { box-shadow: 0 0 0 var(--alarm); color: var(--alarm); }
+.sc .sdot.pulse { box-shadow: 0 0 0 var(--sco); color: var(--sco); }
+
+@keyframes dpulse {
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%       { transform: scale(1.25); opacity: 0.7; }
+}
+
+.styp {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  min-width: 46px;
+}
+.ac .styp { color: var(--alarm); }
+.sc .styp { color: var(--sco); }
+
+.stime {
+  font-size: 24px;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  min-width: 80px;
+  line-height: 1;
+  transition: color 0.4s;
+}
+.ac .stime { color: var(--alarm); }
+.sc .stime { color: var(--sco); }
+.stime.idle { color: var(--dim) !important; font-size: 18px; }
+
+.smeta {
+  font-size: 9px;
+  color: var(--dim);
+  line-height: 1.9;
+  letter-spacing: 0.03em;
+}
+.smeta b { color: var(--lbl); font-weight: 500; }
+
+/* ──────────── TIMELINE ──────────── */
+.tlwrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+#tlc {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ──────────── TOOLTIP ──────────── */
+#tip {
+  position: fixed;
+  background: var(--sf2);
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  padding: 4px 9px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--txt);
+  pointer-events: none;
+  display: none;
+  z-index: 80;
+  white-space: nowrap;
+}
+
+/* ──────────── MODAL ──────────── */
+.mbg {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.78);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+}
+.mbg.open { display: flex; }
+
+.mpanel {
+  background: var(--sf1);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  padding: 22px;
+  width: 370px;
+  max-width: 94vw;
+}
+
+.mtitle {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  color: var(--txt);
+  margin-bottom: 16px;
+}
+
+.mrow { margin-bottom: 12px; }
+
+.mlbl {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  margin-bottom: 5px;
+}
+
+.minput {
+  display: block;
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  color: var(--txt);
+  font-family: inherit;
+  font-size: 10px;
+  padding: 6px 9px;
+  outline: none;
+}
+.minput:focus { border-color: var(--sco); }
+
+.mtabs {
+  display: flex;
+  gap: 4px;
+}
+.mtab {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  padding: 7px 4px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.mtab.on {
+  border-color: var(--sco);
+  color: var(--sco);
+  background: rgba(0,204,255,0.05);
+}
+
+.mactions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.mbtn {
+  background: none;
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: color 0.1s;
+}
+.mbtn:hover { color: var(--txt); }
+.mbtn.apply {
+  background: var(--sco);
+  border-color: var(--sco);
+  color: #000;
+}
+.mbtn.apply:hover { background: #1adeff; }
+
+/* ──────────── STATS STRIP ──────────── */
+.statsbar {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--bd);
+}
+.statsrow {
+  display: flex;
+  align-items: center;
+  padding: 3px 14px;
+  border-bottom: 1px solid rgba(28,28,52,0.6);
+}
+.statsrow:last-child { border-bottom: none; }
+.statstype {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  flex-shrink: 0;
+  width: 50px;
+}
+.statsrow.arow .statstype { color: rgba(255,51,51,0.45); }
+.statsrow.srow .statstype { color: rgba(0,204,255,0.38); }
+.statscells {
+  display: flex;
+  flex: 1;
+}
+.statscell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 0;
+  border-right: 1px solid rgba(28,28,52,0.7);
+  cursor: default;
+  min-width: 0;
+}
+.statscell:last-child { border-right: none; }
+.sc-lbl {
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  line-height: 1;
+}
+.sc-val {
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+  white-space: nowrap;
+  transition: opacity 0.6s, font-size 0.3s, font-weight 0.3s;
+}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="hdr">
+  <div class="brand">PINNAE <span class="brand-sub">USV MONITOR</span></div>
+  <div class="hdr-right">
+    <div class="pills" id="pills"></div>
+    <div class="conn" id="connBtn" title="Connection settings">
+      <div class="cdot sim" id="cdot"></div>
+      <span id="clbl">SIM</span>
+    </div>
+  </div>
+</header>
+
+<!-- STATUS BAR -->
+<div class="sbar">
+  <div class="scard ac" id="cAlarm">
+    <div class="sdot" id="dAlarm"></div>
+    <div class="styp">ALARM</div>
+    <div class="stime idle" id="tAlarm">—</div>
+    <div class="smeta">
+      count&nbsp;<b id="cntA">0</b><br>
+      rate&nbsp;&nbsp;<b id="rateA">—</b>
+    </div>
+  </div>
+  <div class="scard sc" id="cSocial">
+    <div class="sdot" id="dSocial"></div>
+    <div class="styp">SOCIAL</div>
+    <div class="stime idle" id="tSocial">—</div>
+    <div class="smeta">
+      count&nbsp;&nbsp;&nbsp;<b id="cntS">0</b><br>
+      lo/co/hi&nbsp;<b id="brkS">0/0/0</b>
+    </div>
+  </div>
+</div>
+
+<!-- STATS STRIP -->
+<div class="statsbar">
+  <div class="statsrow arow">
+    <span class="statstype">ALARM</span>
+    <div class="statscells" id="aStatsCells"></div>
+  </div>
+  <div class="statsrow srow">
+    <span class="statstype">SOCIAL</span>
+    <div class="statscells" id="sStatsCells"></div>
+  </div>
+</div>
+
+<!-- TIMELINE -->
+<div class="tlwrap" id="tlwrap">
+  <canvas id="tlc"></canvas>
+</div>
+
+<!-- TOOLTIP -->
+<div id="tip"></div>
+
+<!-- CONFIG MODAL -->
+<div class="mbg" id="mbg">
+  <div class="mpanel">
+    <div class="mtitle">CONNECTION</div>
+    <div class="mrow">
+      <div class="mlbl">MODE</div>
+      <div class="mtabs">
+        <div class="mtab on" data-m="sim">SIMULATION</div>
+        <div class="mtab" data-m="ws">WEBSOCKET</div>
+        <div class="mtab" data-m="http">HTTP POLL</div>
+      </div>
+    </div>
+    <div class="mrow" id="rWs" style="display:none">
+      <div class="mlbl">WEBSOCKET URL</div>
+      <input class="minput" id="inWs" placeholder="ws://host/usv" type="text">
+    </div>
+    <div class="mrow" id="rHttp" style="display:none">
+      <div class="mlbl">ENDPOINT</div>
+      <input class="minput" id="inHttp" placeholder="http://host/api/usv/events" type="text">
+    </div>
+    <div class="mrow" id="rPoll" style="display:none">
+      <div class="mlbl">POLL INTERVAL (ms)</div>
+      <input class="minput" id="inPoll" type="number" value="200" min="50">
+    </div>
+    <div class="mactions">
+      <button class="mbtn" onclick="closeModal()">CANCEL</button>
+      <button class="mbtn apply" onclick="applyModal()">APPLY</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ─── CONSTANTS ──────────────────────────────────────────────────────
+const CT = {
+  alarm:       { label:'ALARM',  color:'#ff3333', glow:'rgba(255,51,51,0.85)',   sub:-1 },
+  social_low:  { label:'S-LOW',  color:'#3399ff', glow:'rgba(51,153,255,0.75)', sub:2  },
+  social_core: { label:'S-CORE', color:'#00ccff', glow:'rgba(0,204,255,0.75)',  sub:1  },
+  social_high: { label:'S-HIGH', color:'#aa66ff', glow:'rgba(170,102,255,0.75)',sub:0  },
+};
+
+const WINS = [
+  { lbl:'1H',  ms:3_600_000        },
+  { lbl:'12H', ms:43_200_000       },
+  { lbl:'1D',  ms:86_400_000       },
+  { lbl:'1W',  ms:604_800_000      },
+  { lbl:'1MO', ms:2_592_000_000    },
+];
+
+const MIN_MS      = 42.7;        // one measurement window
+const GLOW_TAU    = 8_000;       // glow decay time constant ms
+const HIST_CUT    = 90_000;      // historic (density) vs individual rendering threshold ms
+const FLASH_DEC   = 0.88;        // per-frame flash multiplier
+const ACTIVE_MS   = 3_000;
+const PAD = { L:62, R:14, T:10, B:40 };
+
+// Tick definitions for time axis
+const TICKS = [
+  [1e3,'1s'],[5e3,'5s'],[15e3,'15s'],[30e3,'30s'],
+  [6e4,'1m'],[3e5,'5m'],[9e5,'15m'],[18e5,'30m'],
+  [36e5,'1h'],[108e5,'3h'],[216e5,'6h'],[432e5,'12h'],
+  [864e5,'1d'],[2592e5,'3d'],[6048e5,'1w'],[25920e5,'1mo'],
+];
+
+// Slot indices: 0=alarm, 1=s-high, 2=s-core, 3=s-low
+const TYPE_SLOT = {alarm:0, social_high:1, social_core:2, social_low:3};
+
+// ─── STATE ──────────────────────────────────────────────────────────
+let events     = [];   // {ts, type} sorted ascending by ts
+let wIdx       = 0;
+let connMode   = 'sim';
+let ws         = null;
+let httpTmr    = null;
+let lastHttp   = 0;
+let lastAlarmTs  = null;
+let lastSocialTs = null;
+let alarmFlash   = 0;
+let socialFlash  = 0;
+
+// Cached density arrays (reuse to avoid GC)
+let _densW = 0;
+let _dens  = null;
+
+// ─── WINDOW SELECTOR ────────────────────────────────────────────────
+const pillsEl = document.getElementById('pills');
+WINS.forEach((w, i) => {
+  const b = document.createElement('button');
+  b.className = 'pill' + (i===0?' on':'');
+  b.textContent = w.lbl;
+  b.onclick = () => {
+    wIdx = i;
+    pillsEl.querySelectorAll('.pill').forEach((p,j)=>p.classList.toggle('on',j===i));
+  };
+  pillsEl.appendChild(b);
+});
+
+const winMs = () => WINS[wIdx].ms;
+
+// ─── DATA ────────────────────────────────────────────────────────────
+function addEvent(type, ts) {
+  if (!CT[type]) return;
+  // Insert in sorted order (almost always at end)
+  if (!events.length || ts >= events[events.length-1].ts) {
+    events.push({type, ts});
+  } else {
+    let lo=0, hi=events.length;
+    while(lo<hi){ const m=(lo+hi)>>1; events[m].ts<=ts?lo=m+1:hi=m; }
+    events.splice(lo, 0, {type, ts});
+  }
+
+  if (type==='alarm') { lastAlarmTs=ts; alarmFlash=1; }
+  else                { lastSocialTs=ts; socialFlash=1; }
+
+  // Prune beyond max window + 5% buffer
+  const cut = Date.now() - WINS[WINS.length-1].ms * 1.05;
+  if (events.length > 8000 && events[0].ts < cut) {
+    let lo=0, hi=events.length;
+    while(lo<hi){ const m=(lo+hi)>>1; events[m].ts<cut?lo=m+1:hi=m; }
+    if (lo > 200) events = events.slice(lo);
+  }
+}
+
+// Binary search: index of first event with ts >= cutoff
+function firstInWindow(cutoff) {
+  let lo=0, hi=events.length;
+  while(lo<hi){ const m=(lo+hi)>>1; events[m].ts<cutoff?lo=m+1:hi=m; }
+  return lo;
+}
+
+// ─── SIMULATION ─────────────────────────────────────────────────────
+let simOn = false;
+let simT  = null;
+
+function startSim() {
+  simOn = true;
+  buildHistory();
+  simStep();
+}
+
+function stopSim() {
+  simOn = false;
+  clearTimeout(simT);
+}
+
+function buildHistory() {
+  const now = Date.now();
+  const start = now - WINS[WINS.length-1].ms;
+  const SOCIAL = 5 / 60000;
+  const ALARM  = 0.3 / 60000;
+  const TOTAL  = SOCIAL + ALARM;
+
+  let t = start;
+  while (t < now) {
+    t += -Math.log(Math.random()) / TOTAL;
+    if (t >= now) break;
+    if (Math.random() < ALARM / TOTAL) {
+      events.push({type:'alarm', ts:t});
+    } else {
+      const r = Math.random();
+      const type = r<0.35 ? 'social_low' : r<0.80 ? 'social_core' : 'social_high';
+      events.push({type, ts:t});
+    }
+  }
+  // Already in order since t advances monotonically
+  if (events.length) {
+    lastAlarmTs  = events.filter(e=>e.type==='alarm').at(-1)?.ts ?? null;
+    lastSocialTs = events.filter(e=>e.type!=='alarm').at(-1)?.ts ?? null;
+  }
+}
+
+function simStep() {
+  if (!simOn) return;
+  const SOCIAL = 5 / 60000;
+  const ALARM  = 0.3 / 60000;
+  const TOTAL  = SOCIAL + ALARM;
+  const delay  = -Math.log(Math.random()) / TOTAL;
+  simT = setTimeout(() => {
+    const r = Math.random();
+    if (r < ALARM / TOTAL) {
+      addEvent('alarm', Date.now());
+    } else {
+      const rr = Math.random();
+      addEvent(rr<0.35?'social_low':rr<0.80?'social_core':'social_high', Date.now());
+    }
+    simStep();
+  }, delay);
+}
+
+// ─── CANVAS ─────────────────────────────────────────────────────────
+const canvas = document.getElementById('tlc');
+const ctx    = canvas.getContext('2d');
+const wrap   = document.getElementById('tlwrap');
+let dpr      = 1;
+
+function resizeCanvas() {
+  dpr = window.devicePixelRatio || 1;
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  canvas.width  = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  canvas.style.width  = w + 'px';
+  canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+new ResizeObserver(resizeCanvas).observe(wrap);
+resizeCanvas();
+
+function makeScale(W) {
+  return d3.scaleLog()
+    .domain([MIN_MS, winMs()])
+    .range([W - PAD.R, PAD.L])
+    .clamp(true);
+}
+
+// ─── RENDER ─────────────────────────────────────────────────────────
+function render() {
+  const W = canvas.clientWidth;
+  const H = canvas.clientHeight;
+  if (W <= 0 || H <= 0) { requestAnimationFrame(render); return; }
+
+  const now  = Date.now();
+  const wMs  = winMs();
+  const pH   = H - PAD.T - PAD.B;
+
+  // Band geometry
+  const aH   = Math.floor(pH * 0.285);
+  const gap  = Math.max(2, Math.floor(pH * 0.022));
+  const sH   = pH - aH - gap;
+  const sbH  = Math.floor(sH / 3);
+  const aY   = PAD.T;
+  const sY   = PAD.T + aH + gap;
+  const pW   = W - PAD.L - PAD.R;
+
+  const scale = makeScale(W);
+
+  // ── Clear ──
+  ctx.fillStyle = '#0d0d14';
+  ctx.fillRect(0, 0, W, H);
+
+  // ── Band backgrounds ──
+  // Alarm — brightens with flash
+  const af = alarmFlash;
+  const r1 = Math.round(20 + af * 55), g1 = Math.round(6 + af * 4), b1 = Math.round(8 + af * 4);
+  ctx.fillStyle = `rgb(${r1},${g1},${b1})`;
+  ctx.fillRect(PAD.L, aY, pW, aH);
+
+  // Social sub-bands
+  const sf = socialFlash;
+  ctx.fillStyle = `rgba(170,102,255,${0.04 + sf*0.08})`;
+  ctx.fillRect(PAD.L, sY, pW, sbH);
+  ctx.fillStyle = `rgba(0,204,255,${0.04 + sf*0.08})`;
+  ctx.fillRect(PAD.L, sY + sbH, pW, sbH);
+  ctx.fillStyle = `rgba(51,153,255,${0.03 + sf*0.07})`;
+  ctx.fillRect(PAD.L, sY + sbH*2, pW, sbH);
+
+  // Decay flashes
+  alarmFlash  *= FLASH_DEC;
+  socialFlash *= FLASH_DEC;
+
+  // ── Grid ──
+  drawGrid(scale, W, H, aY, aH, sY, sH, sbH, wMs);
+
+  // ── Events ──
+  const histCut  = now - HIST_CUT;
+  const winStart = now - wMs;
+  const startIdx = firstInWindow(winStart);
+
+  // Density maps for historic region
+  const iW = Math.ceil(pW);
+  if (iW !== _densW) {
+    _densW = iW;
+    _dens  = Array.from({length:4}, () => new Float32Array(iW + 2));
+  } else {
+    _dens.forEach(d => d.fill(0));
+  }
+
+  const slotY = [aY, sY, sY+sbH, sY+sbH*2];
+  const slotH = [aH, sbH, sbH, sbH];
+  const slotC = ['#ff3333','#aa66ff','#00ccff','#3399ff'];
+
+  // Pass 1: build density for historic events
+  for (let i = startIdx; i < events.length; i++) {
+    const e = events[i];
+    if (e.ts >= histCut) break;
+    const ago = now - e.ts;
+    const px  = Math.round(scale(ago)) - PAD.L;
+    if (px < 0 || px >= iW) continue;
+    _dens[TYPE_SLOT[e.type]][px]++;
+  }
+
+  // Pass 2: render density columns
+  ctx.save();
+  for (let s = 0; s < 4; s++) {
+    const d = _dens[s];
+    ctx.fillStyle = slotC[s];
+    for (let x = 0; x < iW; x++) {
+      if (d[x] <= 0) continue;
+      const cnt = d[x];
+      const alpha = (1 - Math.pow(0.62, cnt)) * 0.48;
+      ctx.globalAlpha = Math.min(0.82, alpha);
+      ctx.fillRect(PAD.L + x, slotY[s] + 2, 1, slotH[s] - 4);
+    }
+  }
+  ctx.restore();
+
+  // Pass 3: individual ticks for recent events (< HIST_CUT)
+  const recentStart = firstInWindow(histCut);
+  for (let i = recentStart; i < events.length; i++) {
+    const e   = events[i];
+    const ago = now - e.ts;
+    const x   = scale(Math.max(MIN_MS, ago));
+    const fr  = Math.exp(-ago / GLOW_TAU);
+    const s   = TYPE_SLOT[e.type];
+    const y0  = slotY[s] + 2;
+    const y1  = slotY[s] + slotH[s] - 2;
+
+    ctx.save();
+    if (fr > 0.025 && ago < 20000) {
+      ctx.shadowBlur  = 4 + fr * 16;
+      ctx.shadowColor = CT[e.type].glow;
+    }
+    ctx.globalAlpha = 0.22 + fr * 0.78;
+    ctx.strokeStyle = CT[e.type].color;
+    ctx.lineWidth   = fr > 0.35 ? 2.5 : 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y1);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── Sub-band dividers ──
+  ctx.strokeStyle = '#1a1a30';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(PAD.L, sY+sbH);   ctx.lineTo(W-PAD.R, sY+sbH);   ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(PAD.L, sY+sbH*2); ctx.lineTo(W-PAD.R, sY+sbH*2); ctx.stroke();
+
+  // Gap line
+  ctx.strokeStyle = '#13132a';
+  ctx.beginPath(); ctx.moveTo(0, aY+aH+Math.floor(gap/2)); ctx.lineTo(W, aY+aH+Math.floor(gap/2)); ctx.stroke();
+
+  // ── Band labels (left margin) ──
+  ctx.save();
+  ctx.font = '600 9px "IBM Plex Mono", monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  const lbls = [
+    ['ALARM', '#ff3333', aY + aH/2],
+    ['S-HI',  '#aa66ff', sY + sbH*0.5],
+    ['S-CO',  '#00ccff', sY + sbH*1.5],
+    ['S-LO',  '#3399ff', sY + sbH*2.5],
+  ];
+  lbls.forEach(([t,c,y]) => {
+    ctx.fillStyle = c;
+    ctx.globalAlpha = 0.72;
+    ctx.fillText(t, 4, y);
+  });
+  ctx.restore();
+
+  requestAnimationFrame(render);
+}
+
+function drawGrid(scale, W, H, aY, aH, sY, sH, sbH, wMs) {
+  const pBot = sY + sH;
+  const axY  = pBot + 6;
+
+  // Visible ticks that fit
+  const drawn = [];
+  for (const [ms, lbl] of TICKS) {
+    if (ms < MIN_MS || ms > wMs) continue;
+    const x = scale(ms);
+    if (drawn.every(px => Math.abs(x - px) >= 38)) {
+      drawn.push(x);
+
+      // Grid line through both bands
+      ctx.save();
+      ctx.strokeStyle = '#161630';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, aY); ctx.lineTo(x, pBot); ctx.stroke();
+      ctx.restore();
+
+      // Label
+      ctx.fillStyle = '#383858';
+      ctx.font = '9px "IBM Plex Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(lbl, x, axY);
+    }
+  }
+
+  // "now" dashed line
+  const nx = W - PAD.R;
+  ctx.save();
+  ctx.strokeStyle = '#1e1e3c';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 3]);
+  ctx.beginPath(); ctx.moveTo(nx, aY); ctx.lineTo(nx, pBot); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#383858';
+  ctx.font = '9px "IBM Plex Mono", monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.fillText('now', nx - 3, axY);
+  ctx.restore();
+}
+
+// ─── STATUS BAR ─────────────────────────────────────────────────────
+function updateStatus() {
+  const now  = Date.now();
+  const wMs  = winMs();
+  const si   = firstInWindow(now - wMs);
+  const win  = events.slice(si);
+
+  // Alarm
+  const aEvt = win.filter(e => e.type==='alarm');
+  const aLast = aEvt.at(-1)?.ts ?? null;
+  refreshCard({
+    dot:   document.getElementById('dAlarm'),
+    time:  document.getElementById('tAlarm'),
+    card:  document.getElementById('cAlarm'),
+    cnt:   document.getElementById('cntA'),
+    rate:  document.getElementById('rateA'),
+    brk:   null,
+    lastTs: lastAlarmTs && lastAlarmTs >= now-wMs ? lastAlarmTs : null,
+    count:  aEvt.length,
+    wMs,
+  });
+
+  // Social
+  const sEvt = win.filter(e => e.type!=='alarm');
+  const lo = sEvt.filter(e=>e.type==='social_low').length;
+  const co = sEvt.filter(e=>e.type==='social_core').length;
+  const hi = sEvt.filter(e=>e.type==='social_high').length;
+  refreshCard({
+    dot:   document.getElementById('dSocial'),
+    time:  document.getElementById('tSocial'),
+    card:  document.getElementById('cSocial'),
+    cnt:   document.getElementById('cntS'),
+    rate:  null,
+    brk:   document.getElementById('brkS'),
+    lastTs: lastSocialTs && lastSocialTs >= now-wMs ? lastSocialTs : null,
+    count:  sEvt.length,
+    wMs,
+    lo, co, hi,
+  });
+}
+
+function refreshCard({dot, time, card, cnt, rate, brk, lastTs, count, wMs, lo, co, hi}) {
+  const now = Date.now();
+
+  if (!lastTs) {
+    time.textContent = '—';
+    time.classList.add('idle');
+    dot.classList.remove('pulse');
+    dot.style.opacity = '0.25';
+    if (cnt) cnt.textContent = count.toLocaleString();
+    if (rate) rate.textContent = '—';
+    if (brk) brk.textContent = '0/0/0';
+    return;
+  }
+
+  const ago = now - lastTs;
+  time.textContent = fmtAgo(ago);
+  time.classList.remove('idle');
+  dot.classList.toggle('pulse', ago < ACTIVE_MS);
+  dot.style.opacity = ago < ACTIVE_MS ? '1' : ago < 30000 ? '0.8' : '0.45';
+
+  if (cnt) cnt.textContent = count.toLocaleString();
+  if (rate) {
+    const rpm = count / (wMs / 60000);
+    rate.textContent = rpm < 0.1 ? '<0.1/m' : rpm.toFixed(1) + '/m';
+  }
+  if (brk) brk.textContent = `${lo}/${co}/${hi}`;
+}
+
+function fmtAgo(ms) {
+  if (ms < 1000)      return ms.toFixed(0) + 'ms';
+  if (ms < 60_000)    return (ms/1000).toFixed(1) + 's';
+  if (ms < 3_600_000) { const m=~~(ms/60000), s=~~((ms%60000)/1000); return m+'m '+s+'s'; }
+  const h=~~(ms/3_600_000), m=~~((ms%3_600_000)/60000);
+  return h+'h '+m+'m';
+}
+
+setInterval(updateStatus, 100);
+
+// ─── TOOLTIP ────────────────────────────────────────────────────────
+const tip = document.getElementById('tip');
+
+canvas.addEventListener('mousemove', e => {
+  const r  = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left;
+  const W  = canvas.clientWidth;
+  if (mx < PAD.L || mx > W - PAD.R) { tip.style.display='none'; return; }
+
+  const scale   = makeScale(W);
+  const timeAgo = scale.invert(mx);
+  const now     = Date.now();
+
+  // Find nearest event within ±5px
+  let near = null, minD = 5;
+  const si = firstInWindow(now - winMs());
+  for (let i = si; i < events.length; i++) {
+    const ev = events[i];
+    const ex = scale(Math.max(MIN_MS, now - ev.ts));
+    const d  = Math.abs(ex - mx);
+    if (d < minD) { minD=d; near=ev; }
+  }
+
+  const label = near
+    ? `${CT[near.type].label} — ${fmtAgo(now - near.ts)} ago`
+    : fmtAgo(timeAgo) + ' ago';
+
+  tip.innerHTML = label;
+  tip.style.display = 'block';
+  tip.style.left = (e.clientX + 12) + 'px';
+  tip.style.top  = (e.clientY - 8)  + 'px';
+});
+
+canvas.addEventListener('mouseleave', () => { tip.style.display='none'; });
+
+// ─── MODAL ──────────────────────────────────────────────────────────
+document.getElementById('connBtn').addEventListener('click', () =>
+  document.getElementById('mbg').classList.add('open'));
+
+function closeModal() {
+  document.getElementById('mbg').classList.remove('open');
+}
+
+document.querySelectorAll('.mtab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.mtab').forEach(x => x.classList.remove('on'));
+    t.classList.add('on');
+    const m = t.dataset.m;
+    document.getElementById('rWs').style.display   = m==='ws'   ? '' : 'none';
+    document.getElementById('rHttp').style.display = m==='http' ? '' : 'none';
+    document.getElementById('rPoll').style.display = m==='http' ? '' : 'none';
+  });
+});
+
+function applyModal() {
+  const tab = document.querySelector('.mtab.on');
+  const m   = tab ? tab.dataset.m : 'sim';
+
+  stopSim();
+  if (ws) { ws.close(); ws=null; }
+  clearInterval(httpTmr);
+
+  connMode = m;
+  events = []; lastAlarmTs=null; lastSocialTs=null;
+
+  if (m === 'sim') {
+    setConn('sim','SIM');
+    startSim();
+  } else if (m === 'ws') {
+    connectWs(document.getElementById('inWs').value.trim());
+  } else {
+    connectHttp(
+      document.getElementById('inHttp').value.trim(),
+      parseInt(document.getElementById('inPoll').value)||200
+    );
+  }
+  closeModal();
+}
+
+// WebSocket connector
+function connectWs(url) {
+  try {
+    ws = new WebSocket(url);
+    ws.onopen = () => setConn('live','WS');
+    ws.onmessage = msg => {
+      try {
+        const d = JSON.parse(msg.data);
+        const list = Array.isArray(d) ? d : d.events ? d.events : [d.event||d];
+        list.forEach(ev => { if(ev) addEvent(ev.type||ev.callType, ev.timestamp||ev.ts); });
+      } catch(_) {}
+    };
+    ws.onclose = ws.onerror = () => setConn('err','DISC');
+  } catch(_) { setConn('err','ERR'); }
+}
+
+// HTTP poll connector
+function connectHttp(url, interval) {
+  lastHttp = Date.now() - 5000;
+  async function poll() {
+    try {
+      const res  = await fetch(`${url}?since=${lastHttp}&limit=2000`);
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : (data.events||[]);
+      list.forEach(ev => {
+        const ts = ev.timestamp||ev.ts;
+        addEvent(ev.type||ev.callType, ts);
+        if (ts > lastHttp) lastHttp = ts;
+      });
+      setConn('live','HTTP');
+    } catch(_) { setConn('err','ERR'); }
+  }
+  poll();
+  httpTmr = setInterval(poll, interval);
+}
+
+function setConn(cls, lbl) {
+  document.getElementById('cdot').className = 'cdot ' + cls;
+  document.getElementById('clbl').textContent = lbl;
+}
+
+// ─── STATS STRIP ───────────────────────────────────────────────────
+const CMP = [
+  { lbl:'1H',  ms:3_600_000     },
+  { lbl:'3H',  ms:10_800_000    },
+  { lbl:'6H',  ms:21_600_000    },
+  { lbl:'12H', ms:43_200_000    },
+  { lbl:'1D',  ms:86_400_000    },
+  { lbl:'1W',  ms:604_800_000   },
+  { lbl:'1MO', ms:2_592_000_000 },
+];
+
+(function initStatsCells() {
+  ['aStatsCells','sStatsCells'].forEach(pid => {
+    const p = document.getElementById(pid);
+    CMP.forEach((w, i) => {
+      const cell = document.createElement('div');
+      cell.className = 'statscell';
+      cell.innerHTML = `<div class="sc-lbl">${w.lbl}</div><div class="sc-val" id="${pid}-${i}">—</div>`;
+      p.appendChild(cell);
+    });
+  });
+})();
+
+// Baseline: mean call rate over full available history
+function histBaseline(isAlarm) {
+  if (events.length < 30) return null;
+  const span = events[events.length-1].ts - events[0].ts;
+  if (span < 3_600_000) return null;
+  let cnt = 0;
+  for (let i = 0; i < events.length; i++) {
+    if (isAlarm ? events[i].type==='alarm' : events[i].type!=='alarm') cnt++;
+  }
+  return cnt / (span / 60000);  // calls/min
+}
+
+function windowRate(isAlarm, ms, now) {
+  const si = firstInWindow(now - ms);
+  let n = 0;
+  for (let i = si; i < events.length; i++) {
+    if (isAlarm ? events[i].type==='alarm' : events[i].type!=='alarm') n++;
+  }
+  return n / (ms / 60000);
+}
+
+function updateStats() {
+  const now   = Date.now();
+  const avail = events.length ? now - events[0].ts : 0;
+  const aBase = histBaseline(true);
+  const sBase = histBaseline(false);
+  CMP.forEach((w, i) => {
+    renderStat('aStatsCells', i, w, now, aBase, avail, true);
+    renderStat('sStatsCells', i, w, now, sBase, avail, false);
+  });
+}
+
+function renderStat(pid, i, w, now, base, avail, isAlarm) {
+  const el = document.getElementById(`${pid}-${i}`);
+  if (!el) return;
+
+  if (!base || avail < w.ms * 0.5) {
+    el.textContent = '—';
+    el.style.cssText = 'opacity:0.18;font-size:9px;font-weight:400;';
+    el.title = 'insufficient history';
+    return;
+  }
+
+  const rate  = windowRate(isAlarm, w.ms, now);
+  const pct   = (rate / base - 1) * 100;
+  const abs   = Math.abs(pct);
+  const up    = pct >= 0;
+  const arrow = abs >= 20 ? (up ? '↑' : '↓') : '';
+  const sign  = up ? '+' : '−';
+  const text  = arrow + sign + Math.round(abs) + '%';
+
+  // Opacity + size scale with deviation — calm when normal, loud when unusual
+  const opacity = 0.2 + Math.min(0.8, abs / 50);
+  const fs      = abs >= 35 ? '12px' : abs >= 18 ? '10px' : '9px';
+  const fw      = abs >= 20 ? '600' : '400';
+  const color   = isAlarm ? '#ff5544' : '#00ccff';
+
+  el.textContent      = text;
+  el.style.opacity    = opacity;
+  el.style.fontSize   = fs;
+  el.style.fontWeight = fw;
+  el.style.color      = color;
+  el.title = `${isAlarm?'ALARM':'SOCIAL'} ${w.lbl}: ${rate.toFixed(2)}/min  ·  baseline ${base.toFixed(2)}/min`;
+}
+
+setInterval(updateStats, 3000);
+setTimeout(updateStats, 600);
+
+// ─── INIT ────────────────────────────────────────────────────────────
+startSim();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
