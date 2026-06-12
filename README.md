@@ -25,10 +25,11 @@ Designed to run alongside [Squeakorithm](https://github.com/josephcoco/squeakori
 
    The PortAudio library is bundled with `sounddevice` on Windows — no additional system packages needed.
 
-3. **Connect your SO.104 microphone**
-   - Plug in the USB microphone
+3. **Connect your microphone**
+   - Plug in the USB microphone (or connect via audio interface)
    - Windows should recognize it automatically
    - Verify with `python listen.py devices`
+   - If using an audio interface (e.g. MOTU M Series), prefer the **Windows WASAPI** variant from the list — lowest latency, least signal processing. A mic on IN 1L is channel 0 of the stereo input.
 
 **Note:** WSL2 does not support USB audio devices properly. You must run Pinnae on native Windows.
 
@@ -61,7 +62,7 @@ pip install -r requirements.txt
 python listen.py devices
 ```
 
-Look for the SO.104 in the output. Note its name or index.
+Look for your microphone in the output and note its name or index. On Windows, if the same device appears under multiple APIs (MME, DirectSound, WASAPI), use the **WASAPI** entry.
 
 ### Baseline recording (no music playing)
 
