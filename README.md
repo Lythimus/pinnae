@@ -12,10 +12,42 @@ Designed to run alongside [Squeakorithm](https://github.com/josephcoco/squeakori
 - [Sonorous Objects SO.104](https://sonorousobjects.nyc/products/so-104-ultrasonic-omni-microphone) (or any mic that reaches 192 kHz)
 - `sounddevice`, `numpy` (see `requirements.txt`)
 
-On macOS, PortAudio is required by sounddevice:
+### Windows 11 Setup
+
+1. **Install Python 3.10+**
+   - Download from [python.org](https://www.python.org/downloads/) or install via Microsoft Store
+   - During installation, check "Add Python to PATH"
+
+2. **Install dependencies**
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+   The PortAudio library is bundled with `sounddevice` on Windows — no additional system packages needed.
+
+3. **Connect your SO.104 microphone**
+   - Plug in the USB microphone
+   - Windows should recognize it automatically
+   - Verify with `python listen.py devices`
+
+**Note:** WSL2 does not support USB audio devices properly. You must run Pinnae on native Windows.
+
+### macOS Setup
+
+PortAudio is required by sounddevice:
 
 ```bash
 brew install portaudio
+pip install -r requirements.txt
+```
+
+### Linux Setup
+
+Install PortAudio development libraries:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y portaudio19-dev
 pip install -r requirements.txt
 ```
 
