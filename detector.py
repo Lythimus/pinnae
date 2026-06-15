@@ -15,6 +15,8 @@ class DetectionEvent:
     power_db: float
     duration_ms: float
     timestamp_abs: float   # Unix epoch seconds (start of call)
+    start_chunk_idx: int = 0
+    end_chunk_idx: int = 0
 
 
 def compute_power_spectrum(chunk: np.ndarray) -> np.ndarray:
@@ -51,16 +53,18 @@ class BandDetector:
         self._call_max_power: float = -np.inf
         self._active_chunks: int = 0
         self._silence_chunks: int = 0
+        self._call_start_chunk: int = 0
 
         self._min_active = max(1, int(np.ceil(config.MIN_CALL_DURATION_MS / chunk_duration_ms)))
         self._end_silence = max(1, int(np.ceil(config.CALL_END_SILENCE_MS / chunk_duration_ms)))
 
-    def process(self, power_spectrum: np.ndarray, chunk_time: float) -> list[DetectionEvent]:
+    def process(self, power_spectrum: np.ndarray, chunk_time: float, chunk_idx: int = 0) -> list[DetectionEvent]:
         """
         Process one chunk's power spectrum; return any calls that just completed.
 
         power_spectrum must be the full rfft power array (length CHUNK_SAMPLES//2 + 1).
         chunk_time is the Unix epoch time of the start of this chunk.
+        chunk_idx is a monotonic counter used to locate the call in the audio ring buffer.
         """
         band_power = power_spectrum[self._bin_mask]
         peak_idx = int(np.argmax(band_power))
@@ -81,6 +85,7 @@ class BandDetector:
             if not self._in_call:
                 self._in_call = True
                 self._call_start = chunk_time
+                self._call_start_chunk = chunk_idx
                 self._call_peak_freq = peak_freq
                 self._call_max_power = peak_power
                 self._active_chunks = 1
@@ -93,24 +98,24 @@ class BandDetector:
             self._silence_chunks += 1
             if self._silence_chunks >= self._end_silence:
                 if self._active_chunks >= self._min_active:
-                    events.append(self._close_call(chunk_time))
+                    events.append(self._close_call(chunk_time, chunk_idx))
                 else:
                     self._reset()
 
         return events
 
-    def flush(self, current_time: float) -> list[DetectionEvent]:
+    def flush(self, current_time: float, chunk_idx: int = 0) -> list[DetectionEvent]:
         """Finalize any in-progress call. Call at session end before closing the stream."""
         if not self._in_call:
             return []
         events = []
         if self._active_chunks >= self._min_active:
-            events.append(self._close_call(current_time))
+            events.append(self._close_call(current_time, chunk_idx))
         else:
             self._reset()
         return events
 
-    def _close_call(self, current_time: float) -> DetectionEvent:
+    def _close_call(self, current_time: float, chunk_idx: int = 0) -> DetectionEvent:
         duration_ms = (current_time - self._call_start) * 1000.0
         event = DetectionEvent(
             band=self.band_name,
@@ -118,6 +123,8 @@ class BandDetector:
             power_db=self._call_max_power,
             duration_ms=duration_ms,
             timestamp_abs=self._call_start,
+            start_chunk_idx=self._call_start_chunk,
+            end_chunk_idx=chunk_idx,
         )
         self._reset()
         return event
@@ -129,3 +136,4 @@ class BandDetector:
         self._call_max_power = -np.inf
         self._active_chunks = 0
         self._silence_chunks = 0
+        self._call_start_chunk = 0

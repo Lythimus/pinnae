@@ -1,3 +1,5 @@
+import math
+
 # ── Hardware ──────────────────────────────────────────────────────────────────
 SAMPLE_RATE   = 192_000   # Hz — Dodotronic Ultramic SO.104 capability
 CHANNELS      = 1
@@ -32,3 +34,11 @@ NOISE_HISTORY_CHUNKS   = 50     # rolling window length (~2.1 s at 42.7 ms/chunk
 PROPAGATION_DELAY_S = 0.00534
 # Playback energy above this threshold (dB) masks the corresponding mic bin.
 MASK_FLOOR_DB = -40.0
+
+# ── Audio clip recording ──────────────────────────────────────────────────────
+AUDIO_OUTPUT_DIR     = "audio"   # base directory for per-call FLAC clips
+AUDIO_FORMAT         = "flac"    # soundfile format string ("wav" also valid)
+AUDIO_BUFFER_SECONDS = 30.0      # ring-buffer duration (seconds of raw audio)
+CLIP_PRE_ROLL_MS     = 200.0     # context before call onset
+CLIP_POST_ROLL_MS    = 200.0     # context after call offset
+AUDIO_BUFFER_CHUNKS  = math.ceil(AUDIO_BUFFER_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)

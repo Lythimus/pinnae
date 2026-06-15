@@ -22,7 +22,7 @@ python listen.py playback --manifest session.json --db events.db
 There is no build step and no test suite yet. Syntax-check all modules with:
 
 ```bash
-python3 -c "import ast, sys; [ast.parse(open(f).read()) or print('OK', f) for f in ['config.py','detector.py','storage.py','session.py','listen.py']]"
+python3 -c "import ast, sys; [ast.parse(open(f).read()) or print('OK', f) for f in ['config.py','detector.py','storage.py','session.py','audiowriter.py','listen.py']]"
 ```
 
 ## Architecture
@@ -43,9 +43,11 @@ sounddevice callback (audio thread)
 
 **`session.py`** — reads the Squeakorithm manifest JSON and answers `current_track(epoch_time) → (TrackInfo, elapsed_s)`. Used only in playback mode to attach track-relative timestamps to events.
 
-**`storage.py`** — thread-safe `EventLog` wraps SQLite with a mutex. The consumer thread (not the audio callback) calls `log_event`; the audio callback only enqueues `DetectionEvent` objects.
+**`storage.py`** — thread-safe `EventLog` wraps SQLite with a mutex. The consumer thread (not the audio callback) calls `log_event`; the audio callback only enqueues `DetectionEvent` objects. Events include an `audio_path TEXT` column linking to the saved FLAC clip.
 
-**`listen.py`** — audio callback stays thin: FFT + enqueue only. A daemon consumer thread drains the queue and handles all I/O (print + SQLite). Timestamps use PortAudio's ADC clock calibrated on first callback invocation (`inputBufferAdcTime`) rather than `time.time()` per chunk.
+**`audiowriter.py`** — `AudioRingBuffer` retains the last `AUDIO_BUFFER_SECONDS` (30 s) of raw mic chunks tagged by index; `AudioClipWriter` writes lossless FLAC clips to `audio/{band}/{datetime}.flac`. Both classes are guarded by `threading.Lock`, mirroring `EventLog`'s mutex pattern.
+
+**`listen.py`** — audio callback stays thin: ring-buffer append + FFT + enqueue only. A daemon consumer thread drains the queue and handles all I/O (print + SQLite + FLAC write). Timestamps use PortAudio's ADC clock calibrated on first callback invocation (`inputBufferAdcTime`) rather than `time.time()` per chunk. Pass `--no-audio` to disable clip recording; `--audio-dir` overrides the default `audio/` directory.
 
 ## Frequency bands and overlap
 
@@ -55,4 +57,4 @@ Squeakorithm enforces a **33 kHz hard floor** on all USV generators, so the **al
 
 ## Phase 3 notes (not yet implemented)
 
-Phase 3 adds duplex streaming: push FLAC playback samples to the audio interface while pulling mic input, compute both STFTs per chunk, and zero mic bins where playback energy exceeds `MASK_FLOOR_DB`. The propagation delay constant (`PROPAGATION_DELAY_S = 0.00534` s, 6 ft room) is already in `config.py`. `soundfile` is in `requirements.txt` as a commented-out dependency for this phase.
+Phase 3 adds duplex streaming: push FLAC playback samples to the audio interface while pulling mic input, compute both STFTs per chunk, and zero mic bins where playback energy exceeds `MASK_FLOOR_DB`. The propagation delay constant (`PROPAGATION_DELAY_S = 0.00534` s, 6 ft room) is already in `config.py`. `soundfile` is already an active dependency (added for clip recording).

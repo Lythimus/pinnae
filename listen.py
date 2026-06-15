@@ -27,10 +27,13 @@ import time
 from datetime import datetime
 from typing import Optional
 
+import math
+
 import numpy as np
 import sounddevice as sd
 
 import config
+from audiowriter import AudioClipWriter, AudioRingBuffer
 from detector import BandDetector, DetectionEvent, compute_power_spectrum
 from session import Session
 from storage import EventLog
@@ -54,6 +57,8 @@ def _run_stream(
     duration: Optional[float],
     session: Optional[Session],
     band_names: list[str],
+    audio_dir: str,
+    enable_audio: bool,
 ) -> None:
     session_id = session.session_id if session else datetime.now().isoformat(timespec="seconds")
     db = EventLog(db_path)
@@ -64,9 +69,19 @@ def _run_stream(
     _bcast_sock.setblocking(False)
     _bcast_addr = ("127.0.0.1", 8765)
 
+    ring_buffer: Optional[AudioRingBuffer] = (
+        AudioRingBuffer(config.AUDIO_BUFFER_CHUNKS) if enable_audio else None
+    )
+    clip_writer: Optional[AudioClipWriter] = (
+        AudioClipWriter(audio_dir, config.SAMPLE_RATE, config.AUDIO_FORMAT) if enable_audio else None
+    )
+    _pre_chunks = math.ceil(config.CLIP_PRE_ROLL_MS * config.SAMPLE_RATE / (config.CHUNK_SAMPLES * 1000.0))
+    _post_chunks = math.ceil(config.CLIP_POST_ROLL_MS * config.SAMPLE_RATE / (config.CHUNK_SAMPLES * 1000.0))
+
     # Calibrated once on first callback so chunk timestamps are in Unix epoch seconds.
     _pa_start: list[Optional[float]] = [None]
     _epoch_start: list[float] = [0.0]
+    _chunk_idx: list[int] = [0]
 
     def callback(indata: np.ndarray, frames: int, time_info, status) -> None:
         if status:
@@ -78,12 +93,27 @@ def _run_stream(
             _epoch_start[0] = time.time()
         chunk_time = _epoch_start[0] + (adc_time - _pa_start[0])
 
+        idx = _chunk_idx[0]
+        if ring_buffer is not None:
+            ring_buffer.append(idx, indata[:, 0].copy())
         ps = compute_power_spectrum(indata[:, 0])
         for det in detectors.values():
-            for event in det.process(ps, chunk_time):
+            for event in det.process(ps, chunk_time, idx):
                 event_q.put(event)
+        _chunk_idx[0] += 1
 
     def _log_and_print(event: DetectionEvent) -> None:
+        audio_path: Optional[str] = None
+        if ring_buffer is not None and clip_writer is not None:
+            try:
+                s_idx = max(0, event.start_chunk_idx - _pre_chunks)
+                e_idx = event.end_chunk_idx + _post_chunks
+                samples = ring_buffer.extract(s_idx, e_idx)
+                if samples is not None:
+                    audio_path = clip_writer.write_clip(event.band, event.timestamp_abs, samples)
+            except Exception as exc:
+                print(f"[!] clip write failed: {exc}", file=sys.stderr)
+
         track_name: Optional[str] = None
         track_rel: Optional[float] = None
         if session:
@@ -101,6 +131,7 @@ def _run_stream(
             power_db=event.power_db,
             timestamp_track_relative=track_rel,
             track_name=track_name,
+            audio_path=audio_path,
         )
         try:
             payload = json.dumps({"ts": event.timestamp_abs * 1000, "type": event.band}).encode()
@@ -110,12 +141,14 @@ def _run_stream(
 
         ts = datetime.fromtimestamp(event.timestamp_abs).strftime("%H:%M:%S.%f")[:-3]
         track_str = f"  @track+{track_rel:7.2f}s" if track_rel is not None else ""
+        clip_str = f"  → {audio_path}" if audio_path else ""
         print(
             f"[{ts}] {event.band:<12}  "
             f"peak={event.peak_freq_hz:6.0f} Hz  "
             f"power={event.power_db:+6.1f} dB  "
             f"dur={event.duration_ms:5.1f} ms"
             f"{track_str}"
+            f"{clip_str}"
         )
 
     stop = threading.Event()
@@ -143,6 +176,8 @@ def _run_stream(
     print(f"[squeaker-listen] bands={', '.join(band_names)}")
     print(f"[squeaker-listen] sample_rate={config.SAMPLE_RATE} Hz  chunk={config.CHUNK_SAMPLES} samples (~{1000*config.CHUNK_SAMPLES/config.SAMPLE_RATE:.1f} ms)")
     print(f"[squeaker-listen] threshold={config.DETECTION_THRESHOLD_DB} dB above floor  db={db_path}")
+    if enable_audio:
+        print(f"[squeaker-listen] audio clips → {audio_dir}/  (±{config.CLIP_PRE_ROLL_MS:.0f} ms pre/post roll)")
     print(f"[squeaker-listen] Ctrl+C to stop.")
     print()
 
@@ -171,8 +206,9 @@ def _run_stream(
     finally:
         # Flush any call that was still in progress when the stream closed.
         now = time.time()
+        final_idx = _chunk_idx[0]
         for det in detectors.values():
-            for event in det.flush(now):
+            for event in det.flush(now, final_idx):
                 event_q.put(event)
         stop.set()
         consumer_thread.join(timeout=2.0)
@@ -189,6 +225,8 @@ def cmd_baseline(args: argparse.Namespace) -> None:
         duration=args.duration,
         session=None,
         band_names=BASELINE_BANDS,
+        audio_dir=args.audio_dir,
+        enable_audio=not args.no_audio,
     )
 
 
@@ -203,6 +241,8 @@ def cmd_playback(args: argparse.Namespace) -> None:
         duration=None,
         session=session,
         band_names=PLAYBACK_BANDS,
+        audio_dir=args.audio_dir,
+        enable_audio=not args.no_audio,
     )
 
 
@@ -226,6 +266,10 @@ def main() -> None:
                     help="SQLite output path (default: events.db)")
     bl.add_argument("--duration", type=float, default=None, metavar="SECS",
                     help="Stop after this many seconds (default: run until Ctrl+C)")
+    bl.add_argument("--audio-dir", default=config.AUDIO_OUTPUT_DIR, metavar="PATH",
+                    help=f"Directory for FLAC audio clips (default: {config.AUDIO_OUTPUT_DIR})")
+    bl.add_argument("--no-audio", action="store_true",
+                    help="Disable audio clip recording")
     bl.set_defaults(func=cmd_baseline)
 
     pl = sub.add_parser("playback", help="Monitor during Squeakorithm playback")
@@ -235,6 +279,10 @@ def main() -> None:
                     help="Audio input device name or index (default: system default)")
     pl.add_argument("--db", default="events.db", metavar="PATH",
                     help="SQLite output path (default: events.db)")
+    pl.add_argument("--audio-dir", default=config.AUDIO_OUTPUT_DIR, metavar="PATH",
+                    help=f"Directory for FLAC audio clips (default: {config.AUDIO_OUTPUT_DIR})")
+    pl.add_argument("--no-audio", action="store_true",
+                    help="Disable audio clip recording")
     pl.set_defaults(func=cmd_playback)
 
     dv = sub.add_parser("devices", help="List available audio devices")

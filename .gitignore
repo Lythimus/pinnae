@@ -13,6 +13,7 @@ build/
 
 # Runtime output
 *.db
+audio/
 
 # macOS
 .DS_Store

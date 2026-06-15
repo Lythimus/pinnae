@@ -141,10 +141,24 @@ python listen.py playback --manifest session.json --db session.db
 
 Same bands as baseline. Each logged event additionally records `track_name` and `timestamp_track_relative` (seconds since the track started) by cross-referencing the session manifest.
 
+### Audio clips
+
+Every detected call produces a lossless FLAC clip:
+
+```
+audio/
+  alarm/
+    2026-06-15T14-23-01.042.flac
+  social_low/
+    2026-06-15T14-23-05.117.flac
+```
+
+Clips include ±200 ms of context around each call. The `audio/` directory is written relative to your working directory (or `--audio-dir PATH` to override). Pass `--no-audio` to disable recording.
+
 ### Inspect logged events
 
 ```bash
-sqlite3 session.db "SELECT datetime(timestamp_abs,'unixepoch','localtime'), band, peak_freq_hz, duration_ms, power_db FROM events ORDER BY timestamp_abs;"
+sqlite3 session.db "SELECT datetime(timestamp_abs,'unixepoch','localtime'), band, duration_ms, audio_path FROM events ORDER BY timestamp_abs;"
 ```
 
 ---

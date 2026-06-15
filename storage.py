@@ -18,7 +18,8 @@ class EventLog:
             band                     TEXT    NOT NULL,
             peak_freq_hz             REAL    NOT NULL,
             duration_ms              REAL    NOT NULL,
-            power_db                 REAL    NOT NULL
+            power_db                 REAL    NOT NULL,
+            audio_path               TEXT
         )
     """
 
@@ -40,13 +41,14 @@ class EventLog:
         power_db: float,
         timestamp_track_relative: Optional[float] = None,
         track_name: Optional[str] = None,
+        audio_path: Optional[str] = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """INSERT INTO events
                    (session_id, timestamp_abs, timestamp_track_relative, track_name,
-                    band, peak_freq_hz, duration_ms, power_db)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    band, peak_freq_hz, duration_ms, power_db, audio_path)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     timestamp_abs,
@@ -56,6 +58,7 @@ class EventLog:
                     peak_freq_hz,
                     duration_ms,
                     power_db,
+                    audio_path,
                 ),
             )
             self._conn.commit()
