@@ -33,6 +33,7 @@ import sounddevice as sd
 import config
 from detector import BandDetector, DetectionEvent, compute_power_spectrum
 from session import Session
+from snippets import AudioRingBuffer, save_snippet
 from storage import EventLog
 
 # Bands used in each mode.
@@ -54,11 +55,16 @@ def _run_stream(
     duration: Optional[float],
     session: Optional[Session],
     band_names: list[str],
+    save_snippets: bool = False,
 ) -> None:
     session_id = session.session_id if session else datetime.now().isoformat(timespec="seconds")
     db = EventLog(db_path)
     detectors = _make_detectors(band_names)
     event_q: queue.SimpleQueue[Optional[DetectionEvent]] = queue.SimpleQueue()
+    ring: Optional[AudioRingBuffer] = AudioRingBuffer() if save_snippets else None
+
+    if isinstance(device, str) and device.lstrip("-").isdigit():
+        device = int(device)
 
     _bcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     _bcast_sock.setblocking(False)
@@ -77,6 +83,9 @@ def _run_stream(
             _pa_start[0] = adc_time
             _epoch_start[0] = time.time()
         chunk_time = _epoch_start[0] + (adc_time - _pa_start[0])
+
+        if ring is not None:
+            ring.push(chunk_time, indata[:, 0])
 
         ps = compute_power_spectrum(indata[:, 0])
         for det in detectors.values():
@@ -99,6 +108,7 @@ def _run_stream(
             peak_freq_hz=event.peak_freq_hz,
             duration_ms=event.duration_ms,
             power_db=event.power_db,
+            flagged_artifact=event.flagged_artifact,
             timestamp_track_relative=track_rel,
             track_name=track_name,
         )
@@ -110,13 +120,25 @@ def _run_stream(
 
         ts = datetime.fromtimestamp(event.timestamp_abs).strftime("%H:%M:%S.%f")[:-3]
         track_str = f"  @track+{track_rel:7.2f}s" if track_rel is not None else ""
+        flag_str  = "  [FLAGGED]" if event.flagged_artifact else ""
+
+        if config.SPL_AT_0_DBFS is not None:
+            spl_db = event.power_db + config.SPL_AT_0_DBFS
+            power_str = f"power={event.power_db:+6.1f} dBFS  spl={spl_db:+6.1f} dB"
+        else:
+            power_str = f"power={event.power_db:+6.1f} dBFS (uncalibrated)"
+
         print(
             f"[{ts}] {event.band:<12}  "
             f"peak={event.peak_freq_hz:6.0f} Hz  "
-            f"power={event.power_db:+6.1f} dB  "
+            f"{power_str}  "
             f"dur={event.duration_ms:5.1f} ms"
-            f"{track_str}"
+            f"{track_str}{flag_str}"
         )
+
+        if ring is not None:
+            event_end = event.timestamp_abs + event.duration_ms / 1000.0
+            save_snippet(ring, event.timestamp_abs, event_end, event.band, event.flagged_artifact)
 
     stop = threading.Event()
 
@@ -147,6 +169,7 @@ def _run_stream(
     print()
 
     end_time = time.time() + duration if duration else None
+    thread_started = False
 
     try:
         with sd.InputStream(
@@ -158,6 +181,7 @@ def _run_stream(
             callback=callback,
         ):
             consumer_thread.start()
+            thread_started = True
             while True:
                 if end_time and time.time() >= end_time:
                     break
@@ -165,8 +189,8 @@ def _run_stream(
 
     except KeyboardInterrupt:
         pass
-    except sd.PortAudioError as exc:
-        print(f"\n[squeaker-listen] PortAudio error: {exc}", file=sys.stderr)
+    except (sd.PortAudioError, ValueError) as exc:
+        print(f"\n[squeaker-listen] Audio device error: {exc}", file=sys.stderr)
         print("[squeaker-listen] Run 'python listen.py devices' to list available devices.", file=sys.stderr)
     finally:
         # Flush any call that was still in progress when the stream closed.
@@ -175,7 +199,8 @@ def _run_stream(
             for event in det.flush(now):
                 event_q.put(event)
         stop.set()
-        consumer_thread.join(timeout=2.0)
+        if thread_started:
+            consumer_thread.join(timeout=2.0)
         db.close()
         _bcast_sock.close()
         print(f"\n[squeaker-listen] Session ended. Events saved to {db_path}")
@@ -189,6 +214,7 @@ def cmd_baseline(args: argparse.Namespace) -> None:
         duration=args.duration,
         session=None,
         band_names=BASELINE_BANDS,
+        save_snippets=args.save_snippets,
     )
 
 
@@ -203,6 +229,7 @@ def cmd_playback(args: argparse.Namespace) -> None:
         duration=None,
         session=session,
         band_names=PLAYBACK_BANDS,
+        save_snippets=args.save_snippets,
     )
 
 
@@ -226,6 +253,8 @@ def main() -> None:
                     help="SQLite output path (default: events.db)")
     bl.add_argument("--duration", type=float, default=None, metavar="SECS",
                     help="Stop after this many seconds (default: run until Ctrl+C)")
+    bl.add_argument("--save-snippets", action="store_true", default=False,
+                    help=f"Save WAV + spectrogram PNG for each detection to {config.DETECTION_SNIPPET_DIR}/")
     bl.set_defaults(func=cmd_baseline)
 
     pl = sub.add_parser("playback", help="Monitor during Squeakorithm playback")
@@ -235,6 +264,8 @@ def main() -> None:
                     help="Audio input device name or index (default: system default)")
     pl.add_argument("--db", default="events.db", metavar="PATH",
                     help="SQLite output path (default: events.db)")
+    pl.add_argument("--save-snippets", action="store_true", default=False,
+                    help=f"Save WAV + spectrogram PNG for each detection to {config.DETECTION_SNIPPET_DIR}/")
     pl.set_defaults(func=cmd_playback)
 
     dv = sub.add_parser("devices", help="List available audio devices")

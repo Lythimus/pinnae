@@ -18,7 +18,8 @@ class EventLog:
             band                     TEXT    NOT NULL,
             peak_freq_hz             REAL    NOT NULL,
             duration_ms              REAL    NOT NULL,
-            power_db                 REAL    NOT NULL
+            power_db                 REAL    NOT NULL,
+            flagged_artifact         INTEGER NOT NULL DEFAULT 0
         )
     """
 
@@ -38,6 +39,7 @@ class EventLog:
         peak_freq_hz: float,
         duration_ms: float,
         power_db: float,
+        flagged_artifact: bool = False,
         timestamp_track_relative: Optional[float] = None,
         track_name: Optional[str] = None,
     ) -> None:
@@ -45,8 +47,8 @@ class EventLog:
             self._conn.execute(
                 """INSERT INTO events
                    (session_id, timestamp_abs, timestamp_track_relative, track_name,
-                    band, peak_freq_hz, duration_ms, power_db)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    band, peak_freq_hz, duration_ms, power_db, flagged_artifact)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     timestamp_abs,
@@ -56,6 +58,7 @@ class EventLog:
                     peak_freq_hz,
                     duration_ms,
                     power_db,
+                    int(flagged_artifact),
                 ),
             )
             self._conn.commit()

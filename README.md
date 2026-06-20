@@ -70,6 +70,14 @@ A browser dashboard shows the real-time event timeline, rolling-baseline statist
 uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
+On Windows 11 the `uvicorn` script may not be on your `PATH`. Either use:
+
+```powershell
+python -m uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
+
+or add `%APPDATA%\Python\Python3xx\Scripts` (e.g. `C:\Users\<you>\AppData\Roaming\Python\Python313\Scripts`) to your user `PATH` via **System Properties → Environment Variables**.
+
 Open `http://<lan-ip>:8000` in any browser on the same network.
 
 ### Start capture alongside the server

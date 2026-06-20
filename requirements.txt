@@ -6,5 +6,9 @@ numpy>=1.24.0
 fastapi>=0.110
 uvicorn[standard]>=0.27
 
-# Phase 3 (duplex playback — reading FLAC/WAV for spectrogram masking)
-# soundfile>=0.12.1
+# Snippet capture (--save-snippets): WAV writer + spectrogram renderer
+soundfile>=0.12.1
+matplotlib>=3.7.0
+
+# Phase 0: PDF literature verification (can be removed after use)
+PyPDF2>=3.0.0
