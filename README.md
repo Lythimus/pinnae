@@ -164,6 +164,33 @@ audio/
 
 Clips include ±200 ms of context around each call. The `audio/` directory is written relative to your working directory (or `--audio-dir PATH` to override). Pass `--no-audio` to disable recording.
 
+### Video clips
+
+Video recording is off by default (unlike audio, which is on by default) because it requires a connected camera. Pass `--video` to enable it, for either mode:
+
+```bash
+python listen.py baseline --device "Ultramic 384K BL" --db session.db --video
+python listen.py playback --manifest session.json --db session.db --video
+```
+
+Each detected call produces an mp4 clip with ±5 s of context around the call:
+
+```
+video/
+  alarm/
+    2026-06-15T14-23-01.042.mp4
+  social_low/
+    2026-06-15T14-23-05.117.mp4
+```
+
+A burst of overlapping calls produces a single clip rather than one per call. Useful flags:
+
+- `--video-dir PATH` — directory for mp4 clips (default: `video/`)
+- `--camera INDEX` — camera device index or path (default: `0`); designed for IR-modified USB cameras under infrared illumination, works with any OpenCV-compatible UVC camera
+- `--video-continuous` — additionally write one continuous mp4 for the whole session to `video/continuous/`
+
+If the camera fails to open, video recording is disabled with a warning and the audio pipeline runs unaffected.
+
 ### Inspect logged events
 
 ```bash

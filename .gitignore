@@ -13,7 +13,10 @@ build/
 
 # Runtime output
 *.db
+*.db-shm
+*.db-wal
 audio/
+video/
 
 # macOS
 .DS_Store
