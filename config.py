@@ -42,3 +42,16 @@ AUDIO_BUFFER_SECONDS = 30.0      # ring-buffer duration (seconds of raw audio)
 CLIP_PRE_ROLL_MS     = 200.0     # context before call onset
 CLIP_POST_ROLL_MS    = 200.0     # context after call offset
 AUDIO_BUFFER_CHUNKS  = math.ceil(AUDIO_BUFFER_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
+
+# ── Video clip recording (optional, requires --video) ─────────────────────────
+VIDEO_OUTPUT_DIR       = "video"   # base directory for per-call mp4 clips
+VIDEO_FORMAT           = "mp4"     # container; codec "mp4v"
+VIDEO_FPS              = 30
+VIDEO_WIDTH            = 1280      # 720p default; bump to 1920x1080 for finer scoring
+VIDEO_HEIGHT           = 720
+VIDEO_CAMERA_INDEX     = 0         # cv2.VideoCapture index or device path
+VIDEO_BUFFER_SECONDS   = 30.0      # ring-buffer duration (seconds of camera frames)
+VIDEO_CLIP_PRE_ROLL_S  = 5.0       # context before call onset
+VIDEO_CLIP_POST_ROLL_S = 5.0       # context after call offset
+VIDEO_JPEG_QUALITY     = 80        # ring-buffer frame compression (memory bound)
+VIDEO_BUFFER_FRAMES    = math.ceil(VIDEO_BUFFER_SECONDS * VIDEO_FPS)

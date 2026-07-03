@@ -22,7 +22,7 @@ python listen.py playback --manifest session.json --db events.db
 There is no build step and no test suite yet. Syntax-check all modules with:
 
 ```bash
-python3 -c "import ast, sys; [ast.parse(open(f).read()) or print('OK', f) for f in ['config.py','detector.py','storage.py','session.py','audiowriter.py','listen.py']]"
+python3 -c "import ast, sys; [ast.parse(open(f).read()) or print('OK', f) for f in ['config.py','detector.py','storage.py','session.py','audiowriter.py','videowriter.py','listen.py']]"
 ```
 
 ## Architecture
@@ -43,11 +43,13 @@ sounddevice callback (audio thread)
 
 **`session.py`** — reads the Squeakorithm manifest JSON and answers `current_track(epoch_time) → (TrackInfo, elapsed_s)`. Used only in playback mode to attach track-relative timestamps to events.
 
-**`storage.py`** — thread-safe `EventLog` wraps SQLite with a mutex. The consumer thread (not the audio callback) calls `log_event`; the audio callback only enqueues `DetectionEvent` objects. Events include an `audio_path TEXT` column linking to the saved FLAC clip.
+**`storage.py`** — thread-safe `EventLog` wraps SQLite with a mutex. The consumer thread (not the audio callback) calls `log_event`; the audio callback only enqueues `DetectionEvent` objects. Events include `audio_path TEXT` and `video_path TEXT` columns linking to the saved clips. On init, the schema runs a migration: if `video_path` is absent in an existing DB it is added via `ALTER TABLE`.
 
 **`audiowriter.py`** — `AudioRingBuffer` retains the last `AUDIO_BUFFER_SECONDS` (30 s) of raw mic chunks tagged by index; `AudioClipWriter` writes lossless FLAC clips to `audio/{band}/{datetime}.flac`. Both classes are guarded by `threading.Lock`, mirroring `EventLog`'s mutex pattern.
 
-**`listen.py`** — audio callback stays thin: ring-buffer append + FFT + enqueue only. A daemon consumer thread drains the queue and handles all I/O (print + SQLite + FLAC write). Timestamps use PortAudio's ADC clock calibrated on first callback invocation (`inputBufferAdcTime`) rather than `time.time()` per chunk. Pass `--no-audio` to disable clip recording; `--audio-dir` overrides the default `audio/` directory.
+**`videowriter.py`** — optional video capture (enabled with `--video`). `VideoRingBuffer` stores the last `VIDEO_BUFFER_SECONDS` (30 s) of camera frames as JPEG bytes (~135 MB vs ~2.4 GB raw) tagged by Unix timestamp. `VideoCaptureThread` is a daemon thread that opens a UVC camera via OpenCV (`cv2.VideoCapture`), runs at ~30 fps, and feeds the ring buffer; if the camera fails to open it prints a warning and disables video without crashing the audio pipeline. `VideoClipWriter.write_clip` extracts a ±5 s window around each call and writes an mp4. Bout de-duplication skips overlapping windows so a burst of calls produces one clip, not dozens. Designed for IR-modified USB cameras under infrared illumination — camera-agnostic via OpenCV index or path.
+
+**`listen.py`** — audio callback stays thin: ring-buffer append + FFT + enqueue only. A daemon consumer thread drains the queue and handles all I/O (print + SQLite + FLAC write + mp4 write). Timestamps use PortAudio's ADC clock calibrated on first callback invocation (`inputBufferAdcTime`) rather than `time.time()` per chunk. Pass `--no-audio` to disable audio clips; `--audio-dir` overrides the default `audio/` directory. Pass `--video` to enable video clips (off by default); `--video-dir`, `--video-continuous`, and `--camera` control the camera index/path, output directory, and whether a continuous full-session mp4 is also written.
 
 ## Frequency bands and overlap
 

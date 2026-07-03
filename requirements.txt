@@ -8,3 +8,6 @@ uvicorn[standard]>=0.27
 
 # Audio clip recording (FLAC writer) + Phase 3 duplex playback
 soundfile>=0.12.1
+
+# Video clip recording (optional, requires --video; any UVC camera via OpenCV)
+opencv-python>=4.8

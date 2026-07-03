@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import socket
 import sys
@@ -32,11 +33,14 @@ import math
 import numpy as np
 import sounddevice as sd
 
+import cv2
+
 import config
 from audiowriter import AudioClipWriter, AudioRingBuffer
 from detector import BandDetector, DetectionEvent, compute_power_spectrum
 from session import Session
 from storage import EventLog
+from videowriter import VideoClipWriter, VideoRingBuffer, VideoCaptureThread
 
 # Bands used in each mode.
 # social_core / social_high overlap the 33–80 kHz music band; reliable only after
@@ -59,6 +63,10 @@ def _run_stream(
     band_names: list[str],
     audio_dir: str,
     enable_audio: bool,
+    video_dir: str = config.VIDEO_OUTPUT_DIR,
+    enable_video: bool = False,
+    video_continuous: bool = False,
+    camera: int | str = config.VIDEO_CAMERA_INDEX,
 ) -> None:
     session_id = session.session_id if session else datetime.now().isoformat(timespec="seconds")
     db = EventLog(db_path)
@@ -77,6 +85,34 @@ def _run_stream(
     )
     _pre_chunks = math.ceil(config.CLIP_PRE_ROLL_MS * config.SAMPLE_RATE / (config.CHUNK_SAMPLES * 1000.0))
     _post_chunks = math.ceil(config.CLIP_POST_ROLL_MS * config.SAMPLE_RATE / (config.CHUNK_SAMPLES * 1000.0))
+
+    # Video setup — independent capture thread + timestamp-keyed ring buffer.
+    video_ring: Optional[VideoRingBuffer] = None
+    video_clip_writer: Optional[VideoClipWriter] = None
+    capture_thread: Optional[VideoCaptureThread] = None
+    if enable_video:
+        continuous_writer: Optional[cv2.VideoWriter] = None
+        if video_continuous:
+            cont_dir = os.path.join(video_dir, "continuous")
+            os.makedirs(cont_dir, exist_ok=True)
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            cont_path = os.path.join(cont_dir, f"{session_id.replace(':', '-')}.mp4")
+            continuous_writer = cv2.VideoWriter(
+                cont_path, fourcc, config.VIDEO_FPS, (config.VIDEO_WIDTH, config.VIDEO_HEIGHT)
+            )
+        video_ring = VideoRingBuffer(config.VIDEO_BUFFER_FRAMES)
+        video_clip_writer = VideoClipWriter(video_dir, config.VIDEO_FPS, config.VIDEO_WIDTH, config.VIDEO_HEIGHT)
+        capture_thread = VideoCaptureThread(camera, video_ring, continuous_writer)
+        if not capture_thread.start():
+            # Camera unavailable — disable video without crashing audio pipeline.
+            video_ring = None
+            video_clip_writer = None
+            capture_thread = None
+
+    # Per-band last-clip-end-time for bout de-duplication.
+    # Rats call in bursts; overlapping ±5 s windows would produce many near-identical clips.
+    # If the new clip's window start is already inside the previous clip, skip it.
+    _last_video_clip_end: dict[str, float] = {}
 
     # Calibrated once on first callback so chunk timestamps are in Unix epoch seconds.
     _pa_start: list[Optional[float]] = [None]
@@ -114,6 +150,20 @@ def _run_stream(
             except Exception as exc:
                 print(f"[!] clip write failed: {exc}", file=sys.stderr)
 
+        video_path: Optional[str] = None
+        if video_ring is not None and video_clip_writer is not None:
+            t_start = event.timestamp_abs - config.VIDEO_CLIP_PRE_ROLL_S
+            t_end = event.timestamp_abs + event.duration_ms / 1000.0 + config.VIDEO_CLIP_POST_ROLL_S
+            last_end = _last_video_clip_end.get(event.band, 0.0)
+            if t_start >= last_end:
+                try:
+                    frames = video_ring.extract(t_start, t_end)
+                    if frames:
+                        video_path = video_clip_writer.write_clip(event.band, event.timestamp_abs, frames)
+                        _last_video_clip_end[event.band] = t_end
+                except Exception as exc:
+                    print(f"[!] video clip write failed: {exc}", file=sys.stderr)
+
         track_name: Optional[str] = None
         track_rel: Optional[float] = None
         if session:
@@ -132,6 +182,7 @@ def _run_stream(
             timestamp_track_relative=track_rel,
             track_name=track_name,
             audio_path=audio_path,
+            video_path=video_path,
         )
         try:
             payload = json.dumps({"ts": event.timestamp_abs * 1000, "type": event.band}).encode()
@@ -142,6 +193,7 @@ def _run_stream(
         ts = datetime.fromtimestamp(event.timestamp_abs).strftime("%H:%M:%S.%f")[:-3]
         track_str = f"  @track+{track_rel:7.2f}s" if track_rel is not None else ""
         clip_str = f"  → {audio_path}" if audio_path else ""
+        vid_str = f"  → {video_path}" if video_path else ""
         print(
             f"[{ts}] {event.band:<12}  "
             f"peak={event.peak_freq_hz:6.0f} Hz  "
@@ -149,6 +201,7 @@ def _run_stream(
             f"dur={event.duration_ms:5.1f} ms"
             f"{track_str}"
             f"{clip_str}"
+            f"{vid_str}"
         )
 
     stop = threading.Event()
@@ -178,6 +231,10 @@ def _run_stream(
     print(f"[squeaker-listen] threshold={config.DETECTION_THRESHOLD_DB} dB above floor  db={db_path}")
     if enable_audio:
         print(f"[squeaker-listen] audio clips → {audio_dir}/  (±{config.CLIP_PRE_ROLL_MS:.0f} ms pre/post roll)")
+    if capture_thread is not None:
+        print(f"[squeaker-listen] video clips → {video_dir}/  (±{config.VIDEO_CLIP_PRE_ROLL_S:.0f} s pre/post roll  camera={camera})")
+        if video_continuous:
+            print(f"[squeaker-listen] continuous video → {video_dir}/continuous/")
     print(f"[squeaker-listen] Ctrl+C to stop.")
     print()
 
@@ -212,6 +269,8 @@ def _run_stream(
                 event_q.put(event)
         stop.set()
         consumer_thread.join(timeout=2.0)
+        if capture_thread is not None:
+            capture_thread.stop()
         db.close()
         _bcast_sock.close()
         print(f"\n[squeaker-listen] Session ended. Events saved to {db_path}")
@@ -227,6 +286,10 @@ def cmd_baseline(args: argparse.Namespace) -> None:
         band_names=BASELINE_BANDS,
         audio_dir=args.audio_dir,
         enable_audio=not args.no_audio,
+        video_dir=args.video_dir,
+        enable_video=args.video,
+        video_continuous=args.video_continuous,
+        camera=args.camera,
     )
 
 
@@ -243,6 +306,10 @@ def cmd_playback(args: argparse.Namespace) -> None:
         band_names=PLAYBACK_BANDS,
         audio_dir=args.audio_dir,
         enable_audio=not args.no_audio,
+        video_dir=args.video_dir,
+        enable_video=args.video,
+        video_continuous=args.video_continuous,
+        camera=args.camera,
     )
 
 
@@ -270,6 +337,14 @@ def main() -> None:
                     help=f"Directory for FLAC audio clips (default: {config.AUDIO_OUTPUT_DIR})")
     bl.add_argument("--no-audio", action="store_true",
                     help="Disable audio clip recording")
+    bl.add_argument("--video", action="store_true",
+                    help="Enable video clip recording (requires a connected camera)")
+    bl.add_argument("--video-dir", default=config.VIDEO_OUTPUT_DIR, metavar="PATH",
+                    help=f"Directory for mp4 video clips (default: {config.VIDEO_OUTPUT_DIR})")
+    bl.add_argument("--video-continuous", action="store_true",
+                    help="Also write a continuous full-session video to video/continuous/")
+    bl.add_argument("--camera", default=config.VIDEO_CAMERA_INDEX, metavar="INDEX",
+                    help=f"Camera device index or path (default: {config.VIDEO_CAMERA_INDEX})")
     bl.set_defaults(func=cmd_baseline)
 
     pl = sub.add_parser("playback", help="Monitor during Squeakorithm playback")
@@ -283,6 +358,14 @@ def main() -> None:
                     help=f"Directory for FLAC audio clips (default: {config.AUDIO_OUTPUT_DIR})")
     pl.add_argument("--no-audio", action="store_true",
                     help="Disable audio clip recording")
+    pl.add_argument("--video", action="store_true",
+                    help="Enable video clip recording (requires a connected camera)")
+    pl.add_argument("--video-dir", default=config.VIDEO_OUTPUT_DIR, metavar="PATH",
+                    help=f"Directory for mp4 video clips (default: {config.VIDEO_OUTPUT_DIR})")
+    pl.add_argument("--video-continuous", action="store_true",
+                    help="Also write a continuous full-session video to video/continuous/")
+    pl.add_argument("--camera", default=config.VIDEO_CAMERA_INDEX, metavar="INDEX",
+                    help=f"Camera device index or path (default: {config.VIDEO_CAMERA_INDEX})")
     pl.set_defaults(func=cmd_playback)
 
     dv = sub.add_parser("devices", help="List available audio devices")

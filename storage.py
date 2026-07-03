@@ -19,7 +19,8 @@ class EventLog:
             peak_freq_hz             REAL    NOT NULL,
             duration_ms              REAL    NOT NULL,
             power_db                 REAL    NOT NULL,
-            audio_path               TEXT
+            audio_path               TEXT,
+            video_path               TEXT
         )
     """
 
@@ -29,6 +30,10 @@ class EventLog:
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute(self._SCHEMA)
+            # Migrate existing databases that predate the video_path column.
+            existing = {row[1] for row in self._conn.execute("PRAGMA table_info(events)")}
+            if "video_path" not in existing:
+                self._conn.execute("ALTER TABLE events ADD COLUMN video_path TEXT")
             self._conn.commit()
 
     def log_event(
@@ -42,13 +47,14 @@ class EventLog:
         timestamp_track_relative: Optional[float] = None,
         track_name: Optional[str] = None,
         audio_path: Optional[str] = None,
+        video_path: Optional[str] = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """INSERT INTO events
                    (session_id, timestamp_abs, timestamp_track_relative, track_name,
-                    band, peak_freq_hz, duration_ms, power_db, audio_path)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    band, peak_freq_hz, duration_ms, power_db, audio_path, video_path)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     timestamp_abs,
@@ -59,6 +65,7 @@ class EventLog:
                     duration_ms,
                     power_db,
                     audio_path,
+                    video_path,
                 ),
             )
             self._conn.commit()
