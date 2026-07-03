@@ -19,6 +19,7 @@ class EventLog:
             peak_freq_hz             REAL    NOT NULL,
             duration_ms              REAL    NOT NULL,
             power_db                 REAL    NOT NULL,
+            flagged_artifact         INTEGER NOT NULL DEFAULT 0,
             audio_path               TEXT,
             video_path               TEXT
         )
@@ -30,8 +31,14 @@ class EventLog:
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute(self._SCHEMA)
-            # Migrate existing databases that predate the video_path column.
+            # Migrate existing databases that predate columns added later.
             existing = {row[1] for row in self._conn.execute("PRAGMA table_info(events)")}
+            if "flagged_artifact" not in existing:
+                self._conn.execute(
+                    "ALTER TABLE events ADD COLUMN flagged_artifact INTEGER NOT NULL DEFAULT 0"
+                )
+            if "audio_path" not in existing:
+                self._conn.execute("ALTER TABLE events ADD COLUMN audio_path TEXT")
             if "video_path" not in existing:
                 self._conn.execute("ALTER TABLE events ADD COLUMN video_path TEXT")
             self._conn.commit()
@@ -44,6 +51,7 @@ class EventLog:
         peak_freq_hz: float,
         duration_ms: float,
         power_db: float,
+        flagged_artifact: bool = False,
         timestamp_track_relative: Optional[float] = None,
         track_name: Optional[str] = None,
         audio_path: Optional[str] = None,
@@ -53,8 +61,9 @@ class EventLog:
             self._conn.execute(
                 """INSERT INTO events
                    (session_id, timestamp_abs, timestamp_track_relative, track_name,
-                    band, peak_freq_hz, duration_ms, power_db, audio_path, video_path)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    band, peak_freq_hz, duration_ms, power_db,
+                    flagged_artifact, audio_path, video_path)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     timestamp_abs,
@@ -64,6 +73,7 @@ class EventLog:
                     peak_freq_hz,
                     duration_ms,
                     power_db,
+                    int(flagged_artifact),
                     audio_path,
                     video_path,
                 ),

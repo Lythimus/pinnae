@@ -25,10 +25,11 @@ Designed to run alongside [Squeakorithm](https://github.com/josephcoco/squeakori
 
    The PortAudio library is bundled with `sounddevice` on Windows — no additional system packages needed.
 
-3. **Connect your SO.104 microphone**
-   - Plug in the USB microphone
+3. **Connect your microphone**
+   - Plug in the USB microphone (or connect via audio interface)
    - Windows should recognize it automatically
    - Verify with `python listen.py devices`
+   - If using an audio interface (e.g. MOTU M Series), prefer the **Windows WASAPI** variant from the list — lowest latency, least signal processing. A mic on IN 1L is channel 0 of the stereo input.
 
 **Note:** WSL2 does not support USB audio devices properly. You must run Pinnae on native Windows.
 
@@ -68,6 +69,14 @@ A browser dashboard shows the real-time event timeline, rolling-baseline statist
 ```bash
 uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
+
+On Windows 11 the `uvicorn` script may not be on your `PATH`. Either use:
+
+```powershell
+python -m uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
+
+or add `%APPDATA%\Python\Python3xx\Scripts` (e.g. `C:\Users\<you>\AppData\Roaming\Python\Python313\Scripts`) to your user `PATH` via **System Properties → Environment Variables**.
 
 Open `http://<lan-ip>:8000` in any browser on the same network.
 
@@ -122,7 +131,7 @@ The dashboard should flash an alarm tick within ~50 ms.
 python listen.py devices
 ```
 
-Look for the SO.104 in the output. Note its name or index.
+Look for your microphone in the output and note its name or index. On Windows, if the same device appears under multiple APIs (MME, DirectSound, WASAPI), use the **WASAPI** entry.
 
 ### Baseline recording (no music playing)
 

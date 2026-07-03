@@ -73,6 +73,9 @@ def _run_stream(
     detectors = _make_detectors(band_names)
     event_q: queue.SimpleQueue[Optional[DetectionEvent]] = queue.SimpleQueue()
 
+    if isinstance(device, str) and device.lstrip("-").isdigit():
+        device = int(device)
+
     _bcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     _bcast_sock.setblocking(False)
     _bcast_addr = ("127.0.0.1", 8765)
@@ -179,6 +182,7 @@ def _run_stream(
             peak_freq_hz=event.peak_freq_hz,
             duration_ms=event.duration_ms,
             power_db=event.power_db,
+            flagged_artifact=event.flagged_artifact,
             timestamp_track_relative=track_rel,
             track_name=track_name,
             audio_path=audio_path,
@@ -194,12 +198,21 @@ def _run_stream(
         track_str = f"  @track+{track_rel:7.2f}s" if track_rel is not None else ""
         clip_str = f"  → {audio_path}" if audio_path else ""
         vid_str = f"  → {video_path}" if video_path else ""
+        flag_str = "  [FLAGGED]" if event.flagged_artifact else ""
+
+        if config.SPL_AT_0_DBFS is not None:
+            spl_db = event.power_db + config.SPL_AT_0_DBFS
+            power_str = f"power={event.power_db:+6.1f} dBFS  spl={spl_db:+6.1f} dB"
+        else:
+            power_str = f"power={event.power_db:+6.1f} dBFS (uncalibrated)"
+
         print(
             f"[{ts}] {event.band:<12}  "
             f"peak={event.peak_freq_hz:6.0f} Hz  "
-            f"power={event.power_db:+6.1f} dB  "
+            f"{power_str}  "
             f"dur={event.duration_ms:5.1f} ms"
             f"{track_str}"
+            f"{flag_str}"
             f"{clip_str}"
             f"{vid_str}"
         )
@@ -239,6 +252,7 @@ def _run_stream(
     print()
 
     end_time = time.time() + duration if duration else None
+    thread_started = False
 
     try:
         with sd.InputStream(
@@ -250,6 +264,7 @@ def _run_stream(
             callback=callback,
         ):
             consumer_thread.start()
+            thread_started = True
             while True:
                 if end_time and time.time() >= end_time:
                     break
@@ -257,8 +272,8 @@ def _run_stream(
 
     except KeyboardInterrupt:
         pass
-    except sd.PortAudioError as exc:
-        print(f"\n[squeaker-listen] PortAudio error: {exc}", file=sys.stderr)
+    except (sd.PortAudioError, ValueError) as exc:
+        print(f"\n[squeaker-listen] Audio device error: {exc}", file=sys.stderr)
         print("[squeaker-listen] Run 'python listen.py devices' to list available devices.", file=sys.stderr)
     finally:
         # Flush any call that was still in progress when the stream closed.
@@ -268,7 +283,8 @@ def _run_stream(
             for event in det.flush(now, final_idx):
                 event_q.put(event)
         stop.set()
-        consumer_thread.join(timeout=2.0)
+        if thread_started:
+            consumer_thread.join(timeout=2.0)
         if capture_thread is not None:
             capture_thread.stop()
         db.close()

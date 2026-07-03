@@ -11,3 +11,6 @@ soundfile>=0.12.1
 
 # Video clip recording (optional, requires --video; any UVC camera via OpenCV)
 opencv-python>=4.8
+
+# Phase 0: PDF literature verification (can be removed after use)
+PyPDF2>=3.0.0
