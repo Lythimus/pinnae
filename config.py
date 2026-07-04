@@ -39,6 +39,35 @@ CALL_END_SILENCE_MS    = 42.7   # consecutive below-threshold time to close a ca
 NOISE_HISTORY_CHUNKS   = 700    # rolling window length (~29.9 s at 42.7 ms/chunk)
 MAX_CALL_DURATION_MS   = 4500.0 # flag continuous events longer than literature ceiling
 
+# ── Call-shape gate ───────────────────────────────────────────────────────────
+# Broadband transients (music playback distortion, percussive hash) can exceed
+# DETECTION_THRESHOLD_DB without being a narrowband FM call. A real USV
+# concentrates energy in a bounded, contiguous sub-band around its own peak;
+# broadband noise lights up most of the band relative to its peak too. Gate
+# onset on shape in addition to energy. Values below were measured with
+# evaluate.py against real alarm/social calls (Olszynski & Polowy playback WAVs,
+# tickling recording) — see git history for the sweep that picked them. They
+# still need re-validation against a real mic-recorded music negative (capture
+# one with `listen.py record`) before trusting the *rejection* side in the field.
+CALL_SHAPE_GATE_ENABLED   = True
+# Bins count as "occupied" when within this many dB of the chunk's own peak
+# power in the band — a standard -X dB bandwidth measure. Deliberately *not*
+# relative to the noise floor: a chunk's general energy can sit slightly above
+# the floor across the whole band (harmonics, resampling artifacts) even when
+# the call itself is narrowband, which saturates a floor-relative measure.
+BANDWIDTH_DROPOFF_DB      = 12.0
+# Reject if the widest contiguous occupied run spans more than this fraction
+# of the band's bins (tolerates FM trill smear across one 42.7 ms chunk, and
+# the alarm band's real calls occupying a large share of its narrow 8 kHz width).
+MAX_CALL_BAND_FRACTION    = 0.9
+# Reject if peak_power - median(band_power) falls below this — real calls
+# concentrate energy near the peak; broadband hash does not. Kept low/permissive:
+# measured concentration varies a lot with recording context (a busy multi-rat
+# cage recording has a noisier band median than a curated clean stimulus WAV),
+# so this alone is not a reliable cross-context discriminator — max_run_fraction
+# does most of the rejection work.
+MIN_PEAK_CONCENTRATION_DB = 6.0
+
 # ── SPL calibration ───────────────────────────────────────────────────────────
 # SPL_AT_0_DBFS: offset so that dB_SPL = power_dbfs + SPL_AT_0_DBFS.
 # To calibrate: play a reference tone at a known SPL at the mic, record the peak

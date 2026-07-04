@@ -8,12 +8,15 @@ Subcommands:
             Alarm band is clean. Social bands (>33 kHz) may see music bleed-through
             until spectrogram masking is added in Phase 3.
   devices   List available audio devices.
+  record    Write raw mic input straight to a WAV file (e.g. to capture a music
+            negative corpus for evaluate.py — no detection, no gate applied).
 
 Examples:
   python listen.py baseline --duration 600
   python listen.py baseline --device "Ultramic SO.104" --db session1.db
   python listen.py playback --manifest session.json --db session1.db
   python listen.py devices
+  python listen.py record --duration 300 --out music_neg.wav
 """
 from __future__ import annotations
 
@@ -32,6 +35,7 @@ import math
 
 import numpy as np
 import sounddevice as sd
+import soundfile as sf
 
 import cv2
 
@@ -51,6 +55,23 @@ PLAYBACK_BANDS = ["alarm", "social_low"]
 
 def _make_detectors(band_names: list[str]) -> dict[str, BandDetector]:
     return {name: BandDetector(name, *config.BANDS[name]) for name in band_names}
+
+
+def _classify_valence(event: DetectionEvent) -> str:
+    """
+    Minimal, interpretable band/peak-frequency heuristic — groundwork only, not a
+    trusted classifier. Per Olszynski & Polowy et al. (2022): 22 kHz alarm calls
+    and the 44 kHz register are aversive; 50-70 kHz calls are the appetitive/
+    social register. Validate against the labeled corpora via evaluate.py before
+    relying on this in analysis.
+    """
+    if event.band == "alarm":
+        return "negative"
+    if 40_000 <= event.peak_freq_hz <= 48_000:
+        return "negative"
+    if 48_000 <= event.peak_freq_hz <= 70_000:
+        return "positive"
+    return "unknown"
 
 
 def _run_stream(
@@ -175,6 +196,8 @@ def _run_stream(
                 track, track_rel = result
                 track_name = track.path
 
+        valence = _classify_valence(event)
+
         db.log_event(
             session_id=session_id,
             timestamp_abs=event.timestamp_abs,
@@ -187,6 +210,7 @@ def _run_stream(
             track_name=track_name,
             audio_path=audio_path,
             video_path=video_path,
+            valence=valence,
         )
         try:
             payload = json.dumps({"ts": event.timestamp_abs * 1000, "type": event.band}).encode()
@@ -210,7 +234,8 @@ def _run_stream(
             f"[{ts}] {event.band:<12}  "
             f"peak={event.peak_freq_hz:6.0f} Hz  "
             f"{power_str}  "
-            f"dur={event.duration_ms:5.1f} ms"
+            f"dur={event.duration_ms:5.1f} ms  "
+            f"valence={valence}"
             f"{track_str}"
             f"{flag_str}"
             f"{clip_str}"
@@ -329,6 +354,54 @@ def cmd_playback(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_record(args: argparse.Namespace) -> None:
+    """Write raw mic input straight to a WAV file — for capturing negative corpora
+    (e.g. music played back through the free-roam speaker with no rat present) to
+    feed into evaluate.py."""
+    device = args.device
+    if isinstance(device, str) and device.lstrip("-").isdigit():
+        device = int(device)
+
+    total_frames = int(args.duration * config.SAMPLE_RATE)
+    frame_q: queue.SimpleQueue[np.ndarray] = queue.SimpleQueue()
+
+    def callback(indata: np.ndarray, frames: int, time_info, status) -> None:
+        if status:
+            print(f"[!] {status}", file=sys.stderr)
+        frame_q.put(indata.copy())
+
+    print(f"[squeaker-listen] Recording {args.duration:.0f}s raw audio @ {config.SAMPLE_RATE} Hz → {args.out}")
+    print("[squeaker-listen] Ctrl+C to stop early.")
+
+    frames_written = 0
+    with sf.SoundFile(
+        args.out, mode="w", samplerate=config.SAMPLE_RATE, channels=config.CHANNELS, subtype="FLOAT"
+    ) as f:
+        try:
+            with sd.InputStream(
+                device=device,
+                samplerate=config.SAMPLE_RATE,
+                channels=config.CHANNELS,
+                blocksize=config.CHUNK_SAMPLES,
+                dtype="float32",
+                callback=callback,
+            ):
+                while frames_written < total_frames:
+                    try:
+                        chunk = frame_q.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                    f.write(chunk)
+                    frames_written += len(chunk)
+        except KeyboardInterrupt:
+            pass
+        except (sd.PortAudioError, ValueError) as exc:
+            print(f"\n[squeaker-listen] Audio device error: {exc}", file=sys.stderr)
+            print("[squeaker-listen] Run 'python listen.py devices' to list available devices.", file=sys.stderr)
+
+    print(f"[squeaker-listen] Wrote {frames_written} frames ({frames_written / config.SAMPLE_RATE:.1f}s) to {args.out}")
+
+
 def cmd_devices(_args: argparse.Namespace) -> None:
     print(sd.query_devices())
 
@@ -386,6 +459,15 @@ def main() -> None:
 
     dv = sub.add_parser("devices", help="List available audio devices")
     dv.set_defaults(func=cmd_devices)
+
+    rc = sub.add_parser("record", help="Write raw mic input to a WAV file (no detection)")
+    rc.add_argument("--device", default=None, metavar="NAME",
+                    help="Audio input device name or index (default: system default)")
+    rc.add_argument("--out", required=True, metavar="PATH",
+                    help="Output WAV path")
+    rc.add_argument("--duration", type=float, required=True, metavar="SECS",
+                    help="Recording length in seconds")
+    rc.set_defaults(func=cmd_record)
 
     args = parser.parse_args()
     args.func(args)

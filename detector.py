@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -26,6 +27,63 @@ def compute_power_spectrum(chunk: np.ndarray) -> np.ndarray:
     spectrum = np.fft.rfft(chunk * window)
     power = np.abs(spectrum) ** 2
     return 10.0 * np.log10(np.maximum(power, 1e-12))
+
+
+def _max_contiguous_run(mask: np.ndarray) -> int:
+    """Length of the longest run of consecutive True values in a 1-D bool array."""
+    max_run = 0
+    run = 0
+    for v in mask:
+        if v:
+            run += 1
+            if run > max_run:
+                max_run = run
+        else:
+            run = 0
+    return max_run
+
+
+def band_shape_features(band_power_db: np.ndarray) -> dict:
+    """
+    Cheap per-chunk spectral-shape features distinguishing a narrowband FM call
+    from broadband noise (e.g. music/playback-chain distortion hash).
+
+    band_power_db: raw band power in dB for the current chunk.
+
+    Occupied bins are defined *relative to this chunk's own peak*
+    (a standard "-X dB bandwidth" measure), not relative to the noise floor.
+    A floor-relative shoulder was tried first and failed on real alarm-band
+    calls: a chunk's general energy can sit slightly above the floor across
+    the *whole* band (harmonics, resampling artifacts, general elevation
+    during a call) even though the call itself is narrowband, which made
+    max_run_fraction saturate near 1.0 for genuine calls. Peak-relative
+    occupancy is scale-invariant to that floor-wide elevation.
+    """
+    n_bins = len(band_power_db)
+    if n_bins == 0:
+        return {"occupied_fraction": 0.0, "max_run_fraction": 0.0, "peak_concentration_db": 0.0}
+
+    peak_power_db = float(np.max(band_power_db))
+    occupied = band_power_db >= (peak_power_db - config.BANDWIDTH_DROPOFF_DB)
+    occupied_fraction = float(np.count_nonzero(occupied)) / n_bins
+    max_run_fraction = _max_contiguous_run(occupied) / n_bins
+    peak_concentration_db = peak_power_db - float(np.median(band_power_db))
+
+    return {
+        "occupied_fraction": occupied_fraction,
+        "max_run_fraction": max_run_fraction,
+        "peak_concentration_db": peak_concentration_db,
+    }
+
+
+def passes_call_shape_gate(features: dict) -> bool:
+    """True if shape features look like a real narrowband call rather than broadband noise."""
+    if not config.CALL_SHAPE_GATE_ENABLED:
+        return True
+    return (
+        features["max_run_fraction"] <= config.MAX_CALL_BAND_FRACTION
+        and features["peak_concentration_db"] >= config.MIN_PEAK_CONCENTRATION_DB
+    )
 
 
 class BandDetector:
@@ -70,6 +128,12 @@ class BandDetector:
         self._end_silence = max(1, int(np.ceil(config.CALL_END_SILENCE_MS / chunk_duration_ms)))
         self._max_active = max(1, int(np.ceil(config.MAX_CALL_DURATION_MS / chunk_duration_ms)))
 
+        # Last-chunk diagnostics, exposed read-only for offline evaluation (evaluate.py).
+        # Not used by the live pipeline itself.
+        self.last_peak_excess: float = -np.inf
+        self.last_shape_features: Optional[dict] = None
+        self.last_is_active: bool = False
+
     def _noise_floor(self) -> np.ndarray:
         if self._floor_dirty and len(self._noise_history) >= 5:
             self._floor_cache = np.median(np.stack(self._noise_history), axis=0)
@@ -99,7 +163,15 @@ class BandDetector:
         peak_power = float(band_power[peak_idx])
         peak_freq = float(self._band_freqs[peak_idx])
 
-        is_active = peak_excess >= config.DETECTION_THRESHOLD_DB
+        shape_features = band_shape_features(band_power)
+        is_active = (
+            peak_excess >= config.DETECTION_THRESHOLD_DB
+            and passes_call_shape_gate(shape_features)
+        )
+
+        self.last_peak_excess = peak_excess
+        self.last_shape_features = shape_features
+        self.last_is_active = is_active
 
         events: list[DetectionEvent] = []
 

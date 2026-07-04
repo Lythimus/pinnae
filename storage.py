@@ -21,7 +21,8 @@ class EventLog:
             power_db                 REAL    NOT NULL,
             flagged_artifact         INTEGER NOT NULL DEFAULT 0,
             audio_path               TEXT,
-            video_path               TEXT
+            video_path               TEXT,
+            valence                  TEXT
         )
     """
 
@@ -41,6 +42,8 @@ class EventLog:
                 self._conn.execute("ALTER TABLE events ADD COLUMN audio_path TEXT")
             if "video_path" not in existing:
                 self._conn.execute("ALTER TABLE events ADD COLUMN video_path TEXT")
+            if "valence" not in existing:
+                self._conn.execute("ALTER TABLE events ADD COLUMN valence TEXT")
             self._conn.commit()
 
     def log_event(
@@ -56,14 +59,15 @@ class EventLog:
         track_name: Optional[str] = None,
         audio_path: Optional[str] = None,
         video_path: Optional[str] = None,
+        valence: Optional[str] = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """INSERT INTO events
                    (session_id, timestamp_abs, timestamp_track_relative, track_name,
                     band, peak_freq_hz, duration_ms, power_db,
-                    flagged_artifact, audio_path, video_path)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    flagged_artifact, audio_path, video_path, valence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     timestamp_abs,
@@ -76,6 +80,7 @@ class EventLog:
                     int(flagged_artifact),
                     audio_path,
                     video_path,
+                    valence,
                 ),
             )
             self._conn.commit()
