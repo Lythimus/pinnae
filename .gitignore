@@ -18,5 +18,8 @@ build/
 audio/
 video/
 
+# Reference files
+music_neg.wav
+
 # macOS
 .DS_Store

@@ -41,37 +41,23 @@ import cv2
 
 import config
 from audiowriter import AudioClipWriter, AudioRingBuffer
-from detector import BandDetector, DetectionEvent, compute_power_spectrum
+from detector import BandDetector, DetectionEvent, classify_valence, compute_power_spectrum
 from session import Session
 from storage import EventLog
 from videowriter import VideoClipWriter, VideoRingBuffer, VideoCaptureThread
 
-# Bands used in each mode.
-# social_core / social_high overlap the 33–80 kHz music band; reliable only after
-# spectrogram masking is added in Phase 3.
-BASELINE_BANDS = ["alarm", "social_low"]
+# Bands used in each mode. social_core (45-70 kHz) is the only band where
+# classify_valence()'s positive/appetitive branch can fire, so monitoring it is
+# what makes positive valence reachable at all. It's safe in baseline mode: no
+# Squeakorithm playback means no 33 kHz-floor music energy to contend with. It
+# stays out of PLAYBACK_BANDS until Phase 3 spectrogram masking, since it (and
+# social_high) overlap the 33-80 kHz music band during actual playback.
+BASELINE_BANDS = ["alarm", "social_low", "social_core"]
 PLAYBACK_BANDS = ["alarm", "social_low"]
 
 
 def _make_detectors(band_names: list[str]) -> dict[str, BandDetector]:
     return {name: BandDetector(name, *config.BANDS[name]) for name in band_names}
-
-
-def _classify_valence(event: DetectionEvent) -> str:
-    """
-    Minimal, interpretable band/peak-frequency heuristic — groundwork only, not a
-    trusted classifier. Per Olszynski & Polowy et al. (2022): 22 kHz alarm calls
-    and the 44 kHz register are aversive; 50-70 kHz calls are the appetitive/
-    social register. Validate against the labeled corpora via evaluate.py before
-    relying on this in analysis.
-    """
-    if event.band == "alarm":
-        return "negative"
-    if 40_000 <= event.peak_freq_hz <= 48_000:
-        return "negative"
-    if 48_000 <= event.peak_freq_hz <= 70_000:
-        return "positive"
-    return "unknown"
 
 
 def _run_stream(
@@ -196,7 +182,7 @@ def _run_stream(
                 track, track_rel = result
                 track_name = track.path
 
-        valence = _classify_valence(event)
+        valence = classify_valence(event)
 
         db.log_event(
             session_id=session_id,
