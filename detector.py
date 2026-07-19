@@ -20,6 +20,10 @@ class DetectionEvent:
     end_chunk_idx: int = 0
     flagged_artifact: bool = field(default=False)
     freq_span_hz: float = 0.0   # max - min per-chunk peak frequency across the call
+    # Per-active-chunk peak-frequency contour (Hz), in order. Diagnostic only —
+    # used by evaluate.py to measure temporal-continuity features. Excludes the
+    # trailing offset-silence chunk(s), so it is the true call trajectory.
+    peak_freq_trace: tuple = field(default_factory=tuple)
 
 
 def compute_power_spectrum(chunk: np.ndarray) -> np.ndarray:
@@ -36,6 +40,12 @@ def _bins_in_notch(freqs: np.ndarray, notch_hz: list[tuple[float, float]]) -> np
     for lo, hi in notch_hz:
         mask |= (freqs >= lo) & (freqs <= hi)
     return mask
+
+
+# Full-spectrum frequency axis shared by every BandDetector instance (same
+# CHUNK_SAMPLES/SAMPLE_RATE for all bands) — used by harmonic_features() to look
+# for sub-harmonic energy outside a band's own bin range.
+FULL_FREQS = np.fft.rfftfreq(config.CHUNK_SAMPLES, d=1.0 / config.SAMPLE_RATE)
 
 
 def _max_contiguous_run(mask: np.ndarray) -> int:
@@ -85,14 +95,63 @@ def band_shape_features(band_power_db: np.ndarray) -> dict:
     }
 
 
-def passes_call_shape_gate(features: dict) -> bool:
+def passes_call_shape_gate(features: dict, band_name: str) -> bool:
     """True if shape features look like a real narrowband call rather than broadband noise."""
     if not config.CALL_SHAPE_GATE_ENABLED:
         return True
-    return (
+    if not (
         features["max_run_fraction"] <= config.MAX_CALL_BAND_FRACTION
         and features["peak_concentration_db"] >= config.MIN_PEAK_CONCENTRATION_DB
-    )
+    ):
+        return False
+    if config.SUBHARMONIC_GATE_ENABLED and band_name in config.SUBHARMONIC_GATE_BANDS:
+        if features["subharmonic_ratio_db"] > config.MAX_SUBHARMONIC_RATIO_DB:
+            return False
+    return True
+
+
+def harmonic_features(full_power_db: np.ndarray, freqs: np.ndarray, peak_freq_hz: float, peak_power_db: float) -> dict:
+    """
+    Candidate discriminator, measured offline via evaluate.py — not yet wired into
+    passes_call_shape_gate(). Rat USVs are near-pure whistle tones: essentially no
+    energy at f_peak/2, f_peak/3. In-band energy from a music-playback chain
+    artifact (harmonic/intermodulation distortion downstream of the audible-band
+    source, not content encoded in it — see config.py) is almost always a
+    multiple of a much lower audible-band fundamental, which leaves real energy
+    at those sub-multiples. Searched against the *full* spectrum (not the band
+    slice) since a sub-harmonic of an in-band peak usually falls below the
+    band's own low edge.
+    """
+    window_hz = 150.0
+
+    def _max_power_near(target_hz: float) -> float:
+        if target_hz < freqs[0] or target_hz > freqs[-1]:
+            return -np.inf
+        mask = np.abs(freqs - target_hz) <= window_hz
+        if not np.any(mask):
+            return -np.inf
+        return float(np.max(full_power_db[mask]))
+
+    strongest_sub_db = max(_max_power_near(peak_freq_hz / 2.0), _max_power_near(peak_freq_hz / 3.0))
+    ratio_db = strongest_sub_db - peak_power_db if np.isfinite(strongest_sub_db) else -np.inf
+    return {"subharmonic_ratio_db": ratio_db}
+
+
+def classify_valence(event: DetectionEvent) -> str:
+    """
+    Minimal, interpretable band/peak-frequency heuristic — groundwork only, not a
+    trusted classifier. Per Olszynski & Polowy et al. (2022): 22 kHz alarm calls
+    and the 44 kHz register are aversive; 50-70 kHz calls are the appetitive/
+    social register. Validate against the labeled corpora via evaluate.py before
+    relying on this in analysis.
+    """
+    if event.band == "alarm":
+        return "negative"
+    if 40_000 <= event.peak_freq_hz <= 48_000:
+        return "negative"
+    if 48_000 <= event.peak_freq_hz <= 70_000:
+        return "positive"
+    return "unknown"
 
 
 class BandDetector:
@@ -152,6 +211,7 @@ class BandDetector:
         self._active_chunks: int = 0
         self._silence_chunks: int = 0
         self._call_start_chunk: int = 0
+        self._call_peak_freqs: list[float] = []  # active-chunk peak-freq contour
 
         self._min_active = max(1, int(np.ceil(config.MIN_CALL_DURATION_MS / chunk_duration_ms)))
         self._end_silence = max(1, int(np.ceil(config.CALL_END_SILENCE_MS / chunk_duration_ms)))
@@ -162,6 +222,8 @@ class BandDetector:
         self.last_peak_excess: float = -np.inf
         self.last_shape_features: Optional[dict] = None
         self.last_is_active: bool = False
+        self.last_peak_freq: float = -1.0
+        self.last_peak_power_db: float = -np.inf
 
     def _noise_floor(self) -> np.ndarray:
         if self._floor_dirty and len(self._noise_history) >= 5:
@@ -195,14 +257,17 @@ class BandDetector:
         peak_freq = float(self._band_freqs[peak_idx])
 
         shape_features = band_shape_features(band_power)
+        shape_features.update(harmonic_features(power_spectrum, FULL_FREQS, peak_freq, peak_power))
         is_active = (
             peak_excess >= config.DETECTION_THRESHOLD_DB
-            and passes_call_shape_gate(shape_features)
+            and passes_call_shape_gate(shape_features, self.band_name)
         )
 
         self.last_peak_excess = peak_excess
         self.last_shape_features = shape_features
         self.last_is_active = is_active
+        self.last_peak_freq = peak_freq
+        self.last_peak_power_db = peak_power
 
         events: list[DetectionEvent] = []
 
@@ -217,8 +282,10 @@ class BandDetector:
                 self._call_freq_min = peak_freq
                 self._call_freq_max = peak_freq
                 self._active_chunks = 1
+                self._call_peak_freqs = [peak_freq]
             else:
                 self._active_chunks += 1
+                self._call_peak_freqs.append(peak_freq)
                 if peak_power > self._call_max_power:
                     self._call_max_power = peak_power
                     self._call_peak_freq = peak_freq
@@ -291,6 +358,7 @@ class BandDetector:
                 end_chunk_idx=chunk_idx,
                 flagged_artifact=flagged,
                 freq_span_hz=freq_span_hz,
+                peak_freq_trace=tuple(self._call_peak_freqs),
             )
         self._reset()
         return event
@@ -305,3 +373,4 @@ class BandDetector:
         self._active_chunks = 0
         self._silence_chunks = 0
         self._call_start_chunk = 0
+        self._call_peak_freqs = []

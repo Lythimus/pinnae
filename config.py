@@ -46,9 +46,53 @@ MAX_CALL_DURATION_MS   = 4500.0 # flag continuous events longer than literature 
 # broadband noise lights up most of the band relative to its peak too. Gate
 # onset on shape in addition to energy. Values below were measured with
 # evaluate.py against real alarm/social calls (Olszynski & Polowy playback WAVs,
-# tickling recording) — see git history for the sweep that picked them. They
-# still need re-validation against a real mic-recorded music negative (capture
-# one with `listen.py record`) before trusting the *rejection* side in the field.
+# tickling recording) — see git history for the sweep that picked them.
+#
+# A real mic-recorded music negative (41.5 min of an ordinary FLAC album played
+# through laptop speakers — not USV-enriched, not played through the
+# deployment's ultrasonic Vifa-class speakers — captured with `listen.py
+# record` through the SO.104) has now been tested against these defaults via
+# `evaluate.py --sweep`, and the result is a real limitation, not just a
+# caveat: at MAX_CALL_BAND_FRACTION=0.9 / MIN_PEAK_CONCENTRATION_DB=6.0, recall
+# on real calls is ~97% but rejection of the music negative is 0.0% — every
+# false-positive chunk that crossed DETECTION_THRESHOLD_DB during the music
+# also passed the shape gate. Sweeping MAX_CALL_BAND_FRACTION across 0.2-0.9
+# changed nothing (real-call and false-positive candidate chunks both sit well
+# under even the tightest tested value, so this feature doesn't discriminate
+# this false-positive source at all). MIN_PEAK_CONCENTRATION_DB is the only
+# lever that does anything, but the trade-off is harsh: 12.0 dB rejects only
+# ~4% of the false positives while cutting recall to ~50-53%; 18.0 dB rejects
+# ~55% but cuts recall to ~41-43%. No threshold in that range is a good trade
+# — this is why the defaults are unchanged.
+#
+# Laptop speakers cannot radiate meaningful acoustic energy in 18-80 kHz (steep
+# roll-off above ~15-20 kHz), so these false positives are not acoustic
+# instrumental ultrasound — the source FLAC carries no USV-band content.
+# Near-uniform false-positive counts across every monitored band (alarm 2452,
+# social_low 2486, social_core 2468 — including social_core at 45-70 kHz,
+# where a laptop speaker emits essentially nothing) point instead to a
+# playback+capture-chain artifact: harmonic/intermodulation distortion and/or
+# electrical/USB coupling between the laptop and the SO.104, generated
+# downstream of the audible-band music rather than present in the source
+# audio. Conclusion: this gate's two features distinguish narrowband calls
+# from *broadband/percussive* noise (its original design target) but not from
+# this chain artifact, whose false-positive chunks are themselves narrowband
+# and concentrated. Whether genuine ultrasonic-radiating tonal music (played
+# through the deployment's actual ultrasonic speakers) would fare any
+# differently is untested — this corpus cannot answer that question. Treat
+# alarm/social_low events during *this kind of* ambient playback with that in
+# mind; see CLAUDE.md for the source-isolation protocol that narrows down the
+# artifact's origin.
+#
+# Temporal continuity was the last single-source candidate and is now measured
+# and REJECTED (see the CONTINUITY note below) — the surviving false positives
+# are sustained held tones, which are *more* temporally stable than real
+# (swept/trilled) calls, not less. No single-source spectral or temporal
+# feature tried so far separates a rat whistle from this chain artifact. The
+# remaining path is context, not classification: the alarm band is clean
+# during Squeakorithm playback by design (33 kHz floor), and Phase 3
+# spectrogram masking removes playback energy directly rather than out-
+# classifying it.
 CALL_SHAPE_GATE_ENABLED   = True
 # Bins count as "occupied" when within this many dB of the chunk's own peak
 # power in the band — a standard -X dB bandwidth measure. Deliberately *not*
@@ -59,18 +103,87 @@ BANDWIDTH_DROPOFF_DB      = 12.0
 # Reject if the widest contiguous occupied run spans more than this fraction
 # of the band's bins (tolerates FM trill smear across one 42.7 ms chunk, and
 # the alarm band's real calls occupying a large share of its narrow 8 kHz width).
+# Measured to have no effect on real tonal music in the 0.2-0.9 range (see above).
 MAX_CALL_BAND_FRACTION    = 0.9
 # Reject if peak_power - median(band_power) falls below this — real calls
 # concentrate energy near the peak; broadband hash does not. Kept low/permissive:
 # measured concentration varies a lot with recording context (a busy multi-rat
 # cage recording has a noisier band median than a curated clean stimulus WAV),
-# so this alone is not a reliable cross-context discriminator — max_run_fraction
-# does most of the rejection work.
+# so this alone is not a reliable cross-context discriminator. Against a real
+# music negative it is the only lever with any effect, but the recall/rejection
+# trade-off is poor throughout the tested range (see above) — raising it is not
+# a free win.
 MIN_PEAK_CONCENTRATION_DB = 6.0
 
+# ── Sub-harmonic gate (music-artifact discriminator, additive to the shape gate above) ──
+# Rat USVs are near-pure whistle tones — essentially no energy at f_peak/2,
+# f_peak/3. The music-playback false positives, by contrast, carry real energy
+# at those sub-multiples — consistent with harmonic/intermodulation distortion
+# products of the loud audible-band music generated downstream in the
+# playback+capture chain (see the artifact framing above), not with content
+# encoded in the source FLAC. Per-*chunk* subharmonic_ratio_db (strongest
+# sub-harmonic power minus the chunk's own peak power), measured via
+# evaluate.py against the real corpora (rat tickling + Olszynski/Polowy
+# playback WAVs vs. the 41.5-min music_neg), showed a large median gap for
+# alarm (call -46.8 dB vs. false-positive +4.0 dB) and social_low (call -27.7
+# dB vs. false-positive -0.3 dB) — social_core did NOT separate (call p90 was
+# +42.6 dB: complex 50 kHz modulated/trill calls often carry real energy at
+# their own sub-multiples), so this gate is scoped to alarm/social_low only.
+#
+# But per-chunk percentiles overstate real recall: confirmed *events* are the
+# unit that matters, and many real calls are only 1-3 chunks long (min 2 chunks
+# to open, MIN_CALL_DURATION_MS=85ms), so losing even a single chunk to this
+# gate can kill (or truncate below MIN_CALL_DURATION_MS) an entire call. At
+# MAX_SUBHARMONIC_RATIO_DB=-1.5 (picked from the alarm/social_low ~90th-
+# percentile chunk boundary above), a confirmatory evaluate.py run measured
+# **event-level** recall of only ~78% (396/508 kept) against ~58% music
+# rejection (2080/4938 events kept, i.e. down from the current-defaults 0%
+# rejection) — well short of the ~90% recall bar this project requires before
+# shipping a gate on by default. It's the best rejection lever found so far
+# (better than MIN_PEAK_CONCENTRATION_DB's 55%-reject/41-43%-recall option
+# above), but still not a clean win. Left available but OFF by default; a
+# per-call (not per-chunk) version — e.g. requiring N consecutive failing
+# chunks before rejecting, rather than a single-chunk hard cutoff — is the
+# likely next step if this is revisited, since it would stop short calls from
+# being this fragile to one bad chunk.
+SUBHARMONIC_GATE_ENABLED = False
+SUBHARMONIC_GATE_BANDS = frozenset({"alarm", "social_low"})
+MAX_SUBHARMONIC_RATIO_DB = -1.5  # best-measured threshold so far; see note above
+
+# ── Temporal-continuity discriminator (measured and REJECTED — no gate shipped) ─
+# Hypothesis: a real call's peak frequency moves as a connected contour from one
+# 42.7 ms chunk to the next (small |f_{i+1}-f_i| steps), while an unrelated
+# broadband artifact jumping between chunks takes large steps even at similar
+# total FM range. This is distinct from the FM-range feature (also rejected):
+# range is how far the peak wanders overall; step is chunk-to-chunk
+# connectedness. Measured via evaluate.py per confirmed event (using
+# detector's active-chunk-only peak_freq_trace, which excludes trailing
+# offset-silence chunks whose "peak" is just noise argmax and would inject
+# spurious steps), against the real corpora vs. the 41.5-min music_neg
+# (ordinary FLAC through laptop speakers — see the artifact framing above).
+# The decision criterion was pos-p90 < neg-p50 with daylight (real calls
+# clustered at small steps, the artifact at large). The clean
+# median_step_hz(>=3) result is the OPPOSITE — pos p90 sits 3-4x *above* neg p50
+# in every band, i.e. real calls step MORE than the false positives:
+#   alarm       pos p50/p90 = 1640/3830 Hz   neg p50/p90 = 1050/3150 Hz
+#   social_low  pos p50/p90 = 1980/7460 Hz   neg p50/p90 = 2330/6580 Hz
+#   social_core pos p50/p90 = 3890/11000 Hz  neg p50/p90 = 2840/8650 Hz
+# The reversal is diagnostic: the false positives that survive to become
+# confirmed events are sustained *held* tones (flat → small steps) —
+# consistent with a steady chain-distortion artifact riding on sustained
+# musical passages, not with a wandering broadband transient — while real
+# social calls sweep and trill (→ large steps). Continuity therefore points
+# the wrong way. It also can't apply to most alarm calls at all — only 107 of
+# 263 confirmed alarm events have >=3 chunks (59% are 1-2 chunks, too short to
+# have a meaningful step contour), the same short-call fragility that sank the
+# sub-harmonic gate. No code ships beyond the harness measurement in
+# evaluate.py (which reads detector's diagnostic peak_freq_trace, itself
+# runtime-inert).
+
 # ── Offender-bin masking (electronic interference) ───────────────────────────
-# Steady electronic tones are already absorbed by the per-bin rolling floor
-# (see BandDetector docstring), but intermittent narrowband transients (e.g.
+# Distinct problem from the music-artifact investigation above: steady
+# electronic tones are already absorbed by the per-bin rolling floor (see
+# BandDetector docstring), but intermittent narrowband transients (e.g.
 # switching-supply/PWM/relay chatter) can spike faster than the floor adapts
 # and still pass the call-shape gate above, since they're narrowband too.
 # NOISE_NOTCH_HZ excludes specific offender frequency windows from the peak
