@@ -215,13 +215,20 @@ sqlite3 session.db "SELECT datetime(timestamp_abs,'unixepoch','localtime'), band
 Each 42.7 ms audio chunk (8192 samples at 192 kHz) is processed in the sounddevice callback:
 
 1. Apply a Hann window and compute the one-sided FFT power spectrum (dBFS).
-2. For each monitored band, find the peak power and its frequency.
-3. Compare peak power against a rolling noise floor (50-chunk median of band medians, ~2 s window).
-4. If peak exceeds floor by ≥ `DETECTION_THRESHOLD_DB` (default 20 dB): mark the chunk as active.
-5. A call is finalized and logged when `CALL_END_SILENCE_MS` (15 ms) of sub-threshold chunks follow.
-6. Calls shorter than `MIN_CALL_DURATION_MS` (5 ms) are discarded as transients.
+2. For each monitored band, find the peak power and its frequency (known electronic-noise bins can be excluded from this search — see below).
+3. Compare peak power against a rolling per-bin noise floor (700-chunk median per FFT bin, ~30 s window) — a persistent narrowband tone gets absorbed into its own bin and stops firing.
+4. If peak exceeds floor by ≥ `DETECTION_THRESHOLD_DB` (default 20 dB) and passes the call-shape gate: mark the chunk as active.
+5. A call is finalized and logged when `CALL_END_SILENCE_MS` (42.7 ms, 1 chunk) of sub-threshold chunks follow — unless it fails the FM gate (below), in which case it's discarded instead of logged.
+6. Calls shorter than `MIN_CALL_DURATION_MS` (85 ms) are discarded as transients.
 
 All thresholds are in `config.py`.
+
+### Filtering electronic-noise false positives
+
+Two additional defenses, both **off by default** until tuned against a real electronics-only recording on your rig (electronics on, no rat present — capture one with `python listen.py record --out electronics_neg.wav --duration 300`, then use `evaluate.py --sweep-fm` to choose thresholds):
+
+- **Offender-bin notch** (`NOISE_NOTCH_HZ` in `config.py`) — excludes specific known-bad frequency windows (e.g. a switching power supply's whine) from detection in every band, including alarm.
+- **FM gate** (`FM_GATE_ENABLED` / `FM_GATE_BANDS` in `config.py`) — rejects calls whose peak frequency never moved (a hallmark of a fixed-frequency electronic tone, vs. a real USV's glide). Applied only to the bands listed in `FM_GATE_BANDS` (default `social_low`) — never the alarm band, since real 22 kHz alarm calls are themselves close to constant-frequency.
 
 ---
 
@@ -264,3 +271,4 @@ Without a manifest, `playback` mode still detects calls — it just omits the tr
 - **Minute-bucket pre-aggregation** — for long-running sessions the full-resolution history payload can grow large; a `minute_bucket` materialized view would keep `GET /api/usv/events` fast beyond ~100k rows.
 - **5-second server-side reconciler** — if the UDP socket buffer fills under a high burst rate, live packets can drop; a background task emitting `MAX(id)` deltas from SQLite would close the gap for reconnecting clients.
 - **spectrogram masking (Phase 3)** — `social_core` (45–70 kHz) and `social_high` (70–80 kHz) bands are defined in `config.py` but disabled until the duplex masking pipeline is in place; enabling them in `PLAYBACK_BANDS` before then will produce false positives from music bleed-through.
+- **electronic-noise notch + FM gate validation** — `NOISE_NOTCH_HZ` and `FM_GATE_ENABLED` (see "Filtering electronic-noise false positives" above) are implemented but ship inert; they need a real `electronics_neg.wav` capture from the deployed rig run through `evaluate.py --sweep-fm` before the notch list and `MIN_FREQ_MODULATION_HZ` can be populated with validated values.

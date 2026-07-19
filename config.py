@@ -68,6 +68,33 @@ MAX_CALL_BAND_FRACTION    = 0.9
 # does most of the rejection work.
 MIN_PEAK_CONCENTRATION_DB = 6.0
 
+# ── Offender-bin masking (electronic interference) ───────────────────────────
+# Steady electronic tones are already absorbed by the per-bin rolling floor
+# (see BandDetector docstring), but intermittent narrowband transients (e.g.
+# switching-supply/PWM/relay chatter) can spike faster than the floor adapts
+# and still pass the call-shape gate above, since they're narrowband too.
+# NOISE_NOTCH_HZ excludes specific offender frequency windows from the peak
+# search entirely, in every band including alarm — targeted rather than a
+# blanket subtraction, so it can't clip a real call at a neighboring bin.
+# Windows are derived from an electronics-only capture (electronics running,
+# no rat; `listen.py record`) characterized with evaluate.py. Empty until that
+# capture is taken on the deployed rig — masking is a no-op until populated.
+NOISE_NOTCH_ENABLED = True
+NOISE_NOTCH_HZ: list[tuple[float, float]] = []   # [(f_lo_hz, f_hi_hz), ...]
+
+# ── Constant-frequency (FM) rejection gate ───────────────────────────────────
+# Rat social USVs are frequency-modulated (they glide); electronic tones sit
+# at a fixed frequency. Reject a closing call in FM_GATE_BANDS whose peak
+# frequency never moved more than MIN_FREQ_MODULATION_HZ across its duration.
+# Deliberately excludes "alarm": 22 kHz alarm calls are themselves
+# near-constant-frequency (see literature notes above), so this gate would
+# delete real ones there. Off by default and MIN_FREQ_MODULATION_HZ is a
+# placeholder — enable only after choosing a threshold from real pos-vs-neg
+# freq_span_hz percentiles via evaluate.py (see detector.py DetectionEvent).
+FM_GATE_ENABLED = False
+MIN_FREQ_MODULATION_HZ = 1000.0
+FM_GATE_BANDS: list[str] = ["social_low"]
+
 # ── SPL calibration ───────────────────────────────────────────────────────────
 # SPL_AT_0_DBFS: offset so that dB_SPL = power_dbfs + SPL_AT_0_DBFS.
 # To calibrate: play a reference tone at a known SPL at the mic, record the peak

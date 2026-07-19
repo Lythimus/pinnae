@@ -19,6 +19,7 @@ class DetectionEvent:
     start_chunk_idx: int = 0
     end_chunk_idx: int = 0
     flagged_artifact: bool = field(default=False)
+    freq_span_hz: float = 0.0   # max - min per-chunk peak frequency across the call
 
 
 def compute_power_spectrum(chunk: np.ndarray) -> np.ndarray:
@@ -27,6 +28,14 @@ def compute_power_spectrum(chunk: np.ndarray) -> np.ndarray:
     spectrum = np.fft.rfft(chunk * window)
     power = np.abs(spectrum) ** 2
     return 10.0 * np.log10(np.maximum(power, 1e-12))
+
+
+def _bins_in_notch(freqs: np.ndarray, notch_hz: list[tuple[float, float]]) -> np.ndarray:
+    """Boolean mask over `freqs` marking bins that fall inside any offender window."""
+    mask = np.zeros(len(freqs), dtype=bool)
+    for lo, hi in notch_hz:
+        mask |= (freqs >= lo) & (freqs <= hi)
+    return mask
 
 
 def _max_contiguous_run(mask: np.ndarray) -> int:
@@ -98,6 +107,16 @@ class BandDetector:
     DETECTION_THRESHOLD_DB and closes after CALL_END_SILENCE_MS of sub-threshold
     activity. Calls that exceed MAX_CALL_DURATION_MS are closed and tagged as
     flagged_artifact=True.
+
+    Two additional defenses against electronic-noise false positives, both
+    data-driven from evaluate.py (see config.py for details):
+    - Offender-bin masking (config.NOISE_NOTCH_HZ) excludes known electronic
+      frequency windows from the peak search in every band, including alarm.
+    - The FM gate (config.FM_GATE_ENABLED / FM_GATE_BANDS) rejects a closing
+      call whose peak frequency stayed within MIN_FREQ_MODULATION_HZ across
+      its duration — real USVs glide, fixed electronic tones don't — but only
+      in bands listed in FM_GATE_BANDS, never "alarm" (22 kHz alarm calls are
+      themselves near-constant-frequency).
     """
 
     def __init__(self, band_name: str, freq_low: int, freq_high: int) -> None:
@@ -110,6 +129,14 @@ class BandDetector:
         self._band_freqs = freqs[self._bin_mask]
         n_bins = int(self._bin_mask.sum())
 
+        # Offender bins (known electronic-noise frequencies) excluded from the
+        # peak search below, regardless of band — see config.NOISE_NOTCH_HZ.
+        self._notch_mask = (
+            _bins_in_notch(self._band_freqs, config.NOISE_NOTCH_HZ)
+            if config.NOISE_NOTCH_ENABLED
+            else np.zeros(n_bins, dtype=bool)
+        )
+
         # Per-bin noise floor: deque of 1-D arrays, one per chunk.
         self._noise_history: deque[np.ndarray] = deque(maxlen=config.NOISE_HISTORY_CHUNKS)
         self._floor_cache: np.ndarray = np.full(n_bins, -120.0)
@@ -120,6 +147,8 @@ class BandDetector:
         self._call_start: float = 0.0
         self._call_peak_freq: float = 0.0
         self._call_max_power: float = -np.inf
+        self._call_freq_min: float = np.inf
+        self._call_freq_max: float = -np.inf
         self._active_chunks: int = 0
         self._silence_chunks: int = 0
         self._call_start_chunk: int = 0
@@ -158,6 +187,8 @@ class BandDetector:
 
         noise_floor = self._noise_floor()
         excess = band_power - noise_floor
+        # Offender bins never win the peak search — see config.NOISE_NOTCH_HZ.
+        excess = np.where(self._notch_mask, -np.inf, excess)
         peak_idx = int(np.argmax(excess))
         peak_excess = float(excess[peak_idx])
         peak_power = float(band_power[peak_idx])
@@ -183,21 +214,31 @@ class BandDetector:
                 self._call_start_chunk = chunk_idx
                 self._call_peak_freq = peak_freq
                 self._call_max_power = peak_power
+                self._call_freq_min = peak_freq
+                self._call_freq_max = peak_freq
                 self._active_chunks = 1
             else:
                 self._active_chunks += 1
                 if peak_power > self._call_max_power:
                     self._call_max_power = peak_power
                     self._call_peak_freq = peak_freq
+                if peak_freq < self._call_freq_min:
+                    self._call_freq_min = peak_freq
+                if peak_freq > self._call_freq_max:
+                    self._call_freq_max = peak_freq
 
                 # Max-duration guard: close and flag if exceeding literature ceiling.
                 if self._active_chunks >= self._max_active:
-                    events.append(self._close_call(chunk_time, chunk_idx, flagged=True))
+                    event = self._close_call(chunk_time, chunk_idx, flagged=True)
+                    if event is not None:
+                        events.append(event)
         elif self._in_call:
             self._silence_chunks += 1
             if self._silence_chunks >= self._end_silence:
                 if self._active_chunks >= self._min_active:
-                    events.append(self._close_call(chunk_time, chunk_idx))
+                    event = self._close_call(chunk_time, chunk_idx)
+                    if event is not None:
+                        events.append(event)
                 else:
                     self._reset()
 
@@ -209,23 +250,48 @@ class BandDetector:
             return []
         events = []
         if self._active_chunks >= self._min_active:
-            events.append(self._close_call(current_time, chunk_idx))
+            event = self._close_call(current_time, chunk_idx)
+            if event is not None:
+                events.append(event)
         else:
             self._reset()
         return events
 
-    def _close_call(self, current_time: float, chunk_idx: int = 0, flagged: bool = False) -> DetectionEvent:
+    def _close_call(
+        self, current_time: float, chunk_idx: int = 0, flagged: bool = False
+    ) -> Optional[DetectionEvent]:
+        """Build the closing DetectionEvent and reset call state.
+
+        Returns None (rejects the call) when the band-aware FM gate applies:
+        a call in config.FM_GATE_BANDS whose peak frequency never moved more
+        than MIN_FREQ_MODULATION_HZ across its duration is treated as a
+        constant-frequency electronic tone rather than a real (FM) USV. Never
+        applies outside FM_GATE_BANDS, so alarm-band calls always pass.
+        """
         duration_ms = (current_time - self._call_start) * 1000.0
-        event = DetectionEvent(
-            band=self.band_name,
-            peak_freq_hz=self._call_peak_freq,
-            power_db=self._call_max_power,
-            duration_ms=duration_ms,
-            timestamp_abs=self._call_start,
-            start_chunk_idx=self._call_start_chunk,
-            end_chunk_idx=chunk_idx,
-            flagged_artifact=flagged,
+        freq_span_hz = (
+            self._call_freq_max - self._call_freq_min
+            if self._call_freq_max >= self._call_freq_min
+            else 0.0
         )
+        rejected = (
+            config.FM_GATE_ENABLED
+            and self.band_name in config.FM_GATE_BANDS
+            and freq_span_hz < config.MIN_FREQ_MODULATION_HZ
+        )
+        event = None
+        if not rejected:
+            event = DetectionEvent(
+                band=self.band_name,
+                peak_freq_hz=self._call_peak_freq,
+                power_db=self._call_max_power,
+                duration_ms=duration_ms,
+                timestamp_abs=self._call_start,
+                start_chunk_idx=self._call_start_chunk,
+                end_chunk_idx=chunk_idx,
+                flagged_artifact=flagged,
+                freq_span_hz=freq_span_hz,
+            )
         self._reset()
         return event
 
@@ -234,6 +300,8 @@ class BandDetector:
         self._call_start = 0.0
         self._call_peak_freq = 0.0
         self._call_max_power = -np.inf
+        self._call_freq_min = np.inf
+        self._call_freq_max = -np.inf
         self._active_chunks = 0
         self._silence_chunks = 0
         self._call_start_chunk = 0
